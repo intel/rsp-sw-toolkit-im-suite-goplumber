@@ -1,0 +1,21 @@
+{{define "EdgeXEvent" -}}
+    {
+    {{- /* This template outputs a JSON formatted EdgeX event.
+
+    Include this namespace in a template task and provide the device name and
+    readings with some combination of keys or templates ('device'/'readings' or
+    'EdgeXDevice'/'EdgeXReadings', respectively).
+
+    If you don't provide a device name, it will output as "unknown". If you don't
+    provide readings, it'll output an empty list.
+
+    Since the output must be valid JSON, this template surrounds the device name
+    with quotes (") and the readings with square brackets ([]), so you should not
+    include them in your template.
+     */ -}}
+    "origin": {{timestamp -}}
+    ,"device": "{{- block "EdgeXDevice" .}}{{or .device "unknown"}}{{end -}}"
+    ,"readings": [
+    {{- block "EdgeXReadings" .}}{{or .readings ""}}{{end -}}
+    ]}
+{{- end -}}

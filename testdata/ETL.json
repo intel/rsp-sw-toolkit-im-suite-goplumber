@@ -1,0 +1,34 @@
+{
+  "name": "ETL",
+  "description": "Extracts data from an HTTP endpoint, transforms it, and loads it to another HTTP endpoint",
+  "templateRefs": [ "ETL" ],
+  "tasks": {
+    "extract": {
+      "type": "http",
+      "raw": {
+        "method": "GET",
+        "url": "replace with testserver url"
+      }
+    },
+    "transform": {
+      "type": "template",
+      "raw": {
+        "template": "transform"
+      },
+      "links": {
+        "time": { "from": "extract" }
+      },
+      "stopOnEmpty": true
+    },
+    "load": {
+      "type": "http",
+      "links": {
+        "body": { "from": "transform" }
+      },
+      "raw": {
+        "method": "POST",
+        "url": "replace with testserver url"
+      }
+    }
+  }
+}

@@ -1,0 +1,2 @@
+{{- /* unmarshal the input and output it, wrapped in {} */ -}}
+{{- with json .}}{{block "transform" .}}{ {{- . -}} }{{end}}{{end -}}

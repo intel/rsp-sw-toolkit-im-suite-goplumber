@@ -84,8 +84,9 @@ type PipelineFinished func(result PipelineResult)
 func logPipelineResult(r PipelineResult) {
 	if r.Status.Err != nil {
 		logrus.Errorf("Pipeline failed: %+v", r.Status.Err)
+	} else {
+		logrus.Debugf("Pipeline result: %+v", r.Status)
 	}
-	logrus.Debugf("Pipeline result: %+v", r.Status)
 }
 
 // runPipelineForever repeatedly schedules the pipeline's execution until the

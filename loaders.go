@@ -33,7 +33,7 @@ func (fs FSLoader) GetFile(name string) ([]byte, error) {
 
 func (fs FSLoader) LoadTemplateNamespace(path string) (string, error) {
 	if filepath.Ext(path) == "" {
-		path = path + ".gotmpl"
+		path += ".gotmpl"
 	}
 	body, err := fs.GetFile(path)
 	return string(body), err

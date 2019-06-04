@@ -61,13 +61,13 @@ func destServer(w *expect.TWrapper, expected []byte, url *string) (cleanup func(
 func TestPipeline_simpleETL(t *testing.T) {
 	w := expect.WrapT(t)
 	p := getTestPipeline(w, "ETL.json")
-	w.ShouldHaveLength(p.TaskMap, 3)
-	w.ShouldContain(p.taskOrder, p.TaskMap)
+	w.ShouldHaveLength(p.Tasks, 3)
+	w.ShouldContain(p.taskOrder, p.Tasks)
 
 	content := []byte(`583671654321`)
-	defer contentServer(w, content, &(p.TaskMap["extract"].pipe.(*HTTPTask).URL))()
+	defer contentServer(w, content, &(p.Tasks["extract"].pipe.(*HTTPTask).URL))()
 	expected := []byte("1988-06-30T11:00:54.321Z")
-	defer destServer(w, expected, &(p.TaskMap["load"].pipe.(*HTTPTask).URL))()
+	defer destServer(w, expected, &(p.Tasks["load"].pipe.(*HTTPTask).URL))()
 
 	w.ShouldSucceed(p.Execute(context.Background()))
 }
@@ -76,11 +76,11 @@ func TestPipeline_scheduleETL(t *testing.T) {
 	// setup the ETL pipeline
 	w := expect.WrapT(t)
 	p := getTestPipeline(w, "ETL.json")
-	w.ShouldHaveLength(p.TaskMap, 3)
-	w.ShouldContain(p.taskOrder, p.TaskMap)
+	w.ShouldHaveLength(p.Tasks, 3)
+	w.ShouldContain(p.taskOrder, p.Tasks)
 
 	content := []byte(`583671654321`)
-	defer contentServer(w, content, &(p.TaskMap["extract"].pipe.(*HTTPTask).URL))()
+	defer contentServer(w, content, &(p.Tasks["extract"].pipe.(*HTTPTask).URL))()
 
 	// record how many times the destination server is called
 	mtx := sync.Mutex{}
@@ -97,7 +97,7 @@ func TestPipeline_scheduleETL(t *testing.T) {
 	defer destServer.Close()
 
 	// overwrite the URL
-	p.TaskMap["load"].pipe.(*HTTPTask).URL = destServer.URL
+	p.Tasks["load"].pipe.(*HTTPTask).URL = destServer.URL
 
 	// set the pipeline to trigger every two seconds
 	p.Trigger.Interval = Interval{Seconds: 1}

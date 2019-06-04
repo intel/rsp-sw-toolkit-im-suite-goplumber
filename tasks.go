@@ -392,6 +392,10 @@ func (mqttd *MQTTTask) Execute(ctx context.Context, w io.Writer) error {
 }
 
 // unmarshalPartial unmarshals a partially unmarshaled JSON object into a struct.
+//
+// The purpose of this function is letting a struct be "partially" filled with
+// some initial data, then later, new data is presented as JSON and merged with
+// the original struct. It's not the prettiest implementation.
 func unmarshalPartial(partial map[string][]byte, s interface{}) error {
 	v := reflect.ValueOf(s)
 	if !v.IsValid() || v.Kind() != reflect.Ptr {
@@ -484,4 +488,18 @@ func unmarshalPartial(partial map[string][]byte, s interface{}) error {
 	}
 
 	return nil
+}
+
+// getRemaining returns the amount of time remaining before a context will expire.
+func getRemaining(ctx context.Context) time.Duration {
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		deadline = time.Now().Add(time.Second * time.Duration(defaultTimeout))
+	}
+
+	remaining := time.Until(deadline)
+	if remaining.Seconds() < 0 {
+		return 0
+	}
+	return remaining
 }

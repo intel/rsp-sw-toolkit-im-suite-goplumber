@@ -110,7 +110,7 @@ func TestDownloadAndSend(t *testing.T) {
 	defer destServer.Close()
 
 	pipeline := &Pipeline{
-		TaskMap: map[string]*Task{
+		Tasks: map[string]*Task{
 			"getContent": {
 				TaskType: "http",
 				Raw: []byte(fmt.Sprintf(`{"url":"%s", "method": "GET"}`,

@@ -21,6 +21,77 @@ import (
 	"time"
 )
 
+type LoadTask struct {
+	Key     string `json:"name"`
+	Default json.RawMessage
+	source  DataSource
+}
+
+type StoreTask struct {
+	Key   string `json:"name"`
+	Value []byte
+	sink  Sink
+}
+
+func NewLoadTaskGenerator(source DataSource) TaskGenerator {
+	return TaskFunc(func(task *Task) (Pipe, error) {
+		pipe := LoadTask{source: source}
+		if err := json.Unmarshal(task.Raw, pipe); err != nil {
+			return nil, err
+		}
+		return &pipe, nil
+	})
+}
+
+// NewStoreTaskGenerator returns a TaskGenerator that generates Store tasks using
+// the given data Sink.
+func NewStoreTaskGenerator(sink Sink) TaskGenerator {
+	return TaskFunc(func(task *Task) (Pipe, error) {
+		pipe := StoreTask{sink: sink}
+		if err := json.Unmarshal(task.Raw, pipe); err != nil {
+			return nil, err
+		}
+		return &pipe, nil
+	})
+}
+
+func (task *LoadTask) Fill(d map[string][]byte) error {
+	if err := unmarshalPartial(d, task); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (task *LoadTask) Execute(ctx context.Context, w io.Writer) error {
+	if task.Key == "" {
+		return errors.New("missing key name")
+	}
+	v, ok, err := task.source.Get(ctx, task.Key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		logrus.Debugf("missing %s; using default %s", task.Key, task.Default)
+		v = task.Default
+	}
+	_, err = w.Write(v)
+	return err
+}
+
+func (task *StoreTask) Fill(d map[string][]byte) error {
+	if task.Key == "" {
+		return errors.New("missing key name")
+	}
+	return nil
+}
+
+func (task *StoreTask) Execute(ctx context.Context, w io.Writer) error {
+	if task.Key == "" {
+		return errors.New("missing key name")
+	}
+	return task.sink.Put(ctx, task.Key, task.Value)
+}
+
 type HTTPTask struct {
 	client         *http.Client
 	bodyReader     io.Reader
@@ -135,28 +206,6 @@ func (task *HTTPTask) Execute(ctx context.Context, w io.Writer) error {
 	return nil
 }
 
-type JSONTask struct {
-	content map[string]json.RawMessage
-}
-
-func (jt *JSONTask) UnmarshalJSON(data []byte) error {
-	return json.Unmarshal(data, &jt.content)
-}
-
-func (jt *JSONTask) Fill(d map[string][]byte) error {
-	// merge with existing data
-	for k, v := range d {
-		jt.content[k] = v
-	}
-	return nil
-}
-
-func (jt *JSONTask) Execute(ctx context.Context, w io.Writer) error {
-	e := json.NewEncoder(w)
-	e.SetEscapeHTML(false)
-	return e.Encode(jt.content)
-}
-
 type JSONValidationTask struct {
 	Content     []byte `json:"content"`
 	SchemaBytes []byte `json:"schema"`
@@ -202,48 +251,6 @@ func (jvt *JSONValidationTask) Execute(ctx context.Context, w io.Writer) error {
 	}
 	return errors.Errorf("JSON validation failed:\n%s",
 		strings.Join(errStrs, "\n"))
-}
-
-type LoadStoreTask struct {
-	store   PipelineStore
-	Source  string
-	Name    string
-	Value   []byte
-	Default json.RawMessage
-	isLoad  bool
-}
-
-func (lst *LoadStoreTask) Fill(d map[string][]byte) error {
-	if err := unmarshalPartial(d, lst); err != nil {
-		return err
-	}
-	if lst.Name == "" {
-		return errors.New("missing key name")
-	}
-	return nil
-}
-
-func (lst *LoadStoreTask) get(ctx context.Context, w io.Writer) error {
-	if lst.Name == "" {
-		return errors.New("missing key name")
-	}
-	v, ok, err := lst.store.Get(ctx, lst.Name)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		logrus.Debugf("missing %s; using default %s", lst.Name, lst.Default)
-		v = lst.Default
-	}
-	_, err = w.Write(v)
-	return err
-}
-
-func (lst *LoadStoreTask) Execute(ctx context.Context, w io.Writer) error {
-	if lst.isLoad {
-		return lst.get(ctx, w)
-	}
-	return lst.store.Put(ctx, lst.Name, lst.Value)
 }
 
 type MQTTTask struct {
@@ -392,6 +399,10 @@ func (mqttd *MQTTTask) Execute(ctx context.Context, w io.Writer) error {
 }
 
 // unmarshalPartial unmarshals a partially unmarshaled JSON object into a struct.
+//
+// The purpose of this function is letting a struct be "partially" filled with
+// some initial data, then later, new data is presented as JSON and merged with
+// the original struct. It's not the prettiest implementation.
 func unmarshalPartial(partial map[string][]byte, s interface{}) error {
 	v := reflect.ValueOf(s)
 	if !v.IsValid() || v.Kind() != reflect.Ptr {
@@ -484,4 +495,18 @@ func unmarshalPartial(partial map[string][]byte, s interface{}) error {
 	}
 
 	return nil
+}
+
+// getRemaining returns the amount of time remaining before a context will expire.
+func getRemaining(ctx context.Context) time.Duration {
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		deadline = time.Now().Add(time.Second * time.Duration(defaultTimeout))
+	}
+
+	remaining := time.Until(deadline)
+	if remaining.Seconds() < 0 {
+		return 0
+	}
+	return remaining
 }

@@ -4,135 +4,30 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"io"
-	"sort"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
 )
 
-type Pipeline struct {
-	Name          string           `json:"name"`
-	Description   string           `json:"description"`
-	Trigger       Trigger          `json:"trigger"`
-	TaskMap       map[string]*Task `json:"tasks"`
-	TemplateRefs  []string         `json:"templateRefs"`
-	TimeoutSecs   int              `json:"timeoutSeconds"`
-	taskOrder     []string
-	rootNamespace *template.Template
-}
-
-type Task struct {
-	finishTime       int
-	pipe             Pipe
-	TaskType         string          `json:"type"`
-	TemplateName     *string         `json:"template,omitempty"`
-	Raw              json.RawMessage `json:"raw,omitempty"`
-	Links            map[string]Link `json:"links,omitempty"`        // dependencies
-	Successes        []string        `json:"ifSuccessful,omitempty"` // tasks that must finish, but data doesn't matter
-	Failures         []string        `json:"ifFailed,omitempty"`     // not currently used
-	StopIfEmpty      bool            `json:"stopIfEmpty"`
-	ErrorIfEmpty     bool            `json:"errorIfEmpty"`
-	DisableResultLog bool            `json:"disableResultLog"`
-}
-
-type Link struct {
-	Source string  `json:"from"`
-	Using  *string `json:"using,omitempty"`
-	Elem   *string `json:"elem,omitempty"`
-}
-
+// Pipe implementers handle the work required to execute a Task.
 type Pipe interface {
-	Fill(input map[string][]byte) error             // accept data from Links
-	Execute(ctx context.Context, w io.Writer) error // perform an operation and write result
+	// Fill accepts data from Links which is mapped as linkName: taskResult.
+	// Fill should return an error if the mapped input data doesn't make sense
+	// for the given Pipe.
+	Fill(input map[string][]byte) error
+	// Execute executes an operation and writes its result to the given writer.
+	// If the Pipe doesn't have a result, it may choose to simply not write
+	// anything. An empty result isn't typically considered an error, but a Task
+	// may choose to view an empty result as an error explicitly.
+	Execute(ctx context.Context, w io.Writer) error
 }
 
-type Interval struct {
-	Seconds int64 `json:"seconds"`
-}
 
-type Trigger struct {
-	Interval Interval `json:"interval,omitempty"` // run the pipeline every N seconds
-	HTTP     bool     `json:"webhook,omitempty"`  // run when triggered by a POST call matching the pipeline name
-}
-
-// PipeStatus is used to track the status of either a pipeline or a task.
-type PipeStatus struct {
-	State       PipeState
-	StartedAt   time.Time
-	CompletedAt time.Time
-	Err         error
-}
-
-func (ps PipeStatus) MarshalJSON() ([]byte, error) {
-	type status struct {
-		State       PipeState
-		StartedAt   int64
-		CompletedAt int64
-		Err         string
-	}
-	return json.Marshal(status{
-		State:       ps.State,
-		StartedAt:   ps.StartedAt.UnixNano() / 1e6,
-		CompletedAt: ps.CompletedAt.UnixNano() / 1e6,
-		Err:         fmt.Sprintf("%s", ps.Err),
-	})
-}
-
-// PipeState represents the current execution state of a task or pipeline.
-type PipeState int
-
-const (
-	Waiting = PipeState(iota) // not yet scheduled
-	Running
-	Success
-	Failed    // failed in an unrecoverable way
-	Retrying  // failed, but should retry after updating info about task
-	Archiving // updating info about a task that failed multiple times
-	Archived  // task failed in a potentially recoverable way, but exceeded retries
-)
-
-func (ps PipeState) MarshalJSON() ([]byte, error) {
-	switch ps {
-	case Waiting:
-		return []byte(`"Waiting"`), nil
-	case Running:
-		return []byte(`"Running"`), nil
-	case Success:
-		return []byte(`"Success"`), nil
-	case Failed:
-		return []byte(`"Failed"`), nil
-	}
-	return nil, errors.New("unknown state")
-}
-
-type PipelineConnector struct {
-	TemplateLoader TemplateLoader
-	KVData         PipelineStore
-	Secrets        PipelineStore
-}
-
-// TemplateLoader loads templates.
-type TemplateLoader interface {
-	// LoadTemplate returns the template data for a given template reference.
-	LoadTemplateNamespace(id string) (string, error)
-}
-
-// PipelineStore gets and stores key, value pairs for a pipeline.
-type PipelineStore interface {
-	// Get returns data from the Store, or possibly a default value if the key
-	// wasn't present. If the Store returns a default, it should indicate this
-	// by returning false for wasPresent. If there was a problem loading the
-	// value, as might be the case for external stores, it should return an error.
-	Get(ctx context.Context, key string) (data []byte, wasPresent bool, err error)
-	Put(ctx context.Context, key string, value []byte) error
-}
-
-func NewPipeline(config []byte, pcon PipelineConnector) (Pipeline, error) {
+func (plumber Plumber) NewPipeline(config []byte) (Pipeline, error) {
 	p := Pipeline{}
 	if err := json.Unmarshal(config, &p); err != nil {
 		return p, errors.Wrap(err, "failed to unmarshal pipeline config")
@@ -140,74 +35,79 @@ func NewPipeline(config []byte, pcon PipelineConnector) (Pipeline, error) {
 	if p.Name == "" {
 		return p, errors.New("pipeline must have a name")
 	}
-	if err := p.loadTemplates(pcon.TemplateLoader); err != nil {
+
+	rootNamespace, err := plumber.createRootTmpl(p.TemplateRefs)
+	if err != nil {
 		return p, err
 	}
-	if err := p.checkTasks(); err != nil {
+	p.rootNamespace = rootNamespace
+
+	if err := checkTasks(&p); err != nil {
 		return p, err
 	}
-	if err := p.initTasks(pcon); err != nil {
+
+	if err := plumber.initTasks(&p); err != nil {
 		return p, err
 	}
-	if err := p.sortTasks(); err != nil {
+
+	taskOrder, err := sortTasks(p.Tasks)
+	if err != nil {
 		return p, err
 	}
+	p.taskOrder = taskOrder
 
 	return p, nil
 }
 
-// LoadTemplates uses a given loader to load the pipeline's templates.
-func (p *Pipeline) loadTemplates(loader TemplateLoader) error {
+// createRootTmpl loads a set of namespaces into a template.
+func (plumber Plumber) createRootTmpl(namespaces []string) (*template.Template, error) {
 	tmpl, err := baseTmpl.Clone()
 	if err != nil {
-		return errors.Wrapf(err, "unable to clone base template")
+		return nil, errors.Wrapf(err, "unable to clone base template")
 	}
-	p.rootNamespace = tmpl
 
-	for idx, id := range p.TemplateRefs {
+	for idx, id := range namespaces {
 		if id == "" {
-			return errors.Errorf("template reference #%d has no ID", idx)
+			return nil, errors.Errorf("template reference #%d has no ID", idx)
 		}
-		tmplVal, err := loader.LoadTemplateNamespace(id)
+		tmplVal, err := LoadTemplateNamespace(plumber.TemplateSource, id)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if _, err := p.rootNamespace.
-			Option("missingkey=error").
-			Parse(tmplVal); err != nil {
-			return err
+
+		if _, err := tmpl.Option("missingkey=error").Parse(tmplVal); err != nil {
+			return nil, err
 		}
 	}
 
 	// make sure all declared templates are defined
 	var missing []string
 	var allTmpls []string
-	for _, tmpl := range p.rootNamespace.Templates() {
-		if p.rootNamespace.Lookup(tmpl.Name()) == nil {
+	for _, tmpl := range tmpl.Templates() {
+		if tmpl.Lookup(tmpl.Name()) == nil {
 			missing = append(missing, tmpl.Name())
 		}
 		if logrus.IsLevelEnabled(logrus.DebugLevel) {
 			allTmpls = append(allTmpls, tmpl.Name())
 		}
 	}
+
 	logrus.WithField("defined templates", allTmpls).
-		WithField("missing", missing).
-		WithField("pipeline", p.Name).
 		Debug("Parsing complete.")
 	if len(missing) != 0 {
-		return errors.Errorf("missing template definitions for: %s",
+		return nil, errors.Errorf("missing template definitions for: %s",
 			strings.Join(missing, ", "))
 	}
 
-	return nil
+	return tmpl, nil
 }
 
 // CheckTasks verifies that task definitions are valid.
 //
 // It checks the tasks all have a name, that all links have a matching task,
 // and all named templates are loaded.
-func (p *Pipeline) checkTasks() error {
-	for taskName, task := range p.TaskMap {
+func checkTasks(p *Pipeline) error {
+	for taskName, task := range p.Tasks {
 		if taskName == "" {
 			return errors.New("all tasks must have a name")
 		}
@@ -235,7 +135,7 @@ func (p *Pipeline) checkTasks() error {
 				return errors.Errorf("in pipeline %s, task '%s' has link "+
 					"link '%s' without a source", p.Name, taskName, linkName)
 			}
-			if _, ok := p.TaskMap[link.Source]; !ok {
+			if _, ok := p.Tasks[link.Source]; !ok {
 				return errors.Errorf("in pipeline %s, task '%s' has link "+
 					"'%s' with unknown source '%s'", p.Name, taskName, linkName, link.Source)
 			}
@@ -251,7 +151,7 @@ func (p *Pipeline) checkTasks() error {
 				return errors.Errorf("in pipeline %s, task '%s' has an "+
 					"empty 'success' dependency", p.Name, taskName)
 			}
-			if _, ok := p.TaskMap[name]; !ok {
+			if _, ok := p.Tasks[name]; !ok {
 				return errors.Errorf("in pipeline %s, task '%s' depends "+
 					"on success of unknown task '%s'", p.Name, taskName, name)
 			}
@@ -262,7 +162,7 @@ func (p *Pipeline) checkTasks() error {
 				return errors.Errorf("in pipeline %s, task '%s' has an "+
 					"empty 'failure' dependency", p.Name, taskName)
 			}
-			if _, ok := p.TaskMap[name]; !ok {
+			if _, ok := p.Tasks[name]; !ok {
 				return errors.Errorf("in pipeline %s, task '%s' depends "+
 					"on failure of unknown task '%s'", p.Name, taskName, name)
 			}
@@ -272,146 +172,41 @@ func (p *Pipeline) checkTasks() error {
 	return nil
 }
 
-// initTasks initializes the task instances from their raw configurations.
-func (p *Pipeline) initTasks(pcon PipelineConnector) error {
-	for taskName, task := range p.TaskMap {
-		hasRaw := len(task.Raw) != 0
-		switch task.TaskType {
-		case "template":
+// initTasks uses the Plumber to initialize the pipeline's tasks.
+func (plumber Plumber) initTasks(p *Pipeline) error {
+	for taskName, task := range p.Tasks {
+		if task.TaskType == "template" {
 			// handle templates a bit differently -- template names MUST be 'raw',
 			// and we use the root namespace associated with the pipeline.
-			ts, err := NewTemplateTask(task.Raw, p.rootNamespace, pcon.TemplateLoader)
+			ts, err := NewTemplateTask(task.Raw, p.rootNamespace, plumber.TemplateSource)
 			if err != nil {
-				return err
+				return errors.Wrapf(err, "pipeline %s failed to create "+
+					"template task '%s'", p.Name, taskName)
 			}
 			task.pipe = ts
-		case "http":
-			// todo: allow configuring the http client
-			task.pipe = &HTTPTask{}
-		case "mqtt":
-			task.pipe = NewMQTTTask()
-		case "json":
-			task.pipe = &JSONTask{}
-		case "validation":
-			task.pipe = &JSONValidationTask{}
-		case "secret":
-			task.DisableResultLog = true
-			task.pipe = &LoadStoreTask{
-				store:  pcon.Secrets,
-				isLoad: true,
-			}
-		case "get", "put":
-			task.pipe = &LoadStoreTask{
-				store:  pcon.KVData,
-				isLoad: task.TaskType == "get",
-			}
-		default:
-			return errors.Errorf("pipeline %s has unknown task type '%s'",
-				p.Name, task.TaskType)
+			continue
 		}
-		if hasRaw {
-			if err := json.Unmarshal(task.Raw, task.pipe); err != nil {
-				return errors.Wrapf(err, "pipeline %s failed to init %s task '%s'",
-					p.Name, task.TaskType, taskName)
-			}
+
+		generator, ok := plumber.TaskGenerators[task.TaskType]
+		if !ok {
+			return errors.Errorf("pipeline %s defines task '%s' with "+
+				"unknown type '%s'", p.Name, taskName, task.TaskType)
 		}
-		logrus.WithField("pipeline", p.Name).
-			Debugf("initialized %s task '%s'",
-				task.TaskType, taskName)
+
+		var err error
+		task.pipe, err = generator.GetPipe(task)
+		if err != nil {
+			return errors.Errorf("pipeline %s failed to create %s task named '%s'",
+				p.Name, task.TaskType, taskName)
+		}
+
+		logrus.
+			WithField("pipeline", p.Name).
+			WithField("taskType", task.TaskType).
+			WithField("taskName", taskName).
+			Debugf("initialized task")
 	}
 	return nil
-}
-
-// sortTasks sets the taskOrder based on their dependencies.
-//
-// This returns an error if there are circular dependencies (i.e., the dependency
-// graph must form a DAG).
-//
-// Technically, any topological sort will do, but we're better off if we can
-// spread dependent tasks out as far as possible, especially if we add parallelism.
-// We can use something like Coffman-Graham to do so, but it's an over-optimization
-// at the moment.
-//
-// NOTE: This method assumes that the pipeline's Links have already been verified;
-// if Links declare dependent tasks that don't exist, then this method will panic.
-func (p *Pipeline) sortTasks() error {
-	p.taskOrder = make([]string, 0, len(p.TaskMap))
-
-	for taskName, task := range p.TaskMap {
-		p.taskOrder = append(p.taskOrder, taskName)
-		_, dag := p.getFinishTime(task)
-		if !dag {
-			return errors.Errorf("pipeline %s has task '%s' as part of a cycle",
-				p.Name, taskName)
-		}
-	}
-
-	sort.Slice(p.taskOrder, func(t1, t2 int) bool {
-		return p.TaskMap[p.taskOrder[t1]].finishTime < p.TaskMap[p.taskOrder[t2]].finishTime
-	})
-	return nil
-}
-
-// getFinishTime returns the number of tasks which must complete for this one to
-// finish, including the task itself, along with a bool indicating whether or not
-// the task is part of a cycle, in which case the finish time is undetermined
-// and the second return value is false.
-//
-// The minimum finish time for any task is 1, provided the graph has no cycles.
-func (p *Pipeline) getFinishTime(t *Task) (int, bool) {
-	if t.finishTime == -1 {
-		return -1, false
-	}
-	if t.finishTime != 0 {
-		return t.finishTime, true
-	}
-	t.finishTime = -1
-	maxChild := 0
-
-	for _, child := range t.Links {
-		childFinish, dag := p.getFinishTime(p.TaskMap[child.Source])
-		if !dag {
-			return childFinish, false
-		}
-		if childFinish > maxChild {
-			maxChild = childFinish
-		}
-	}
-	for _, child := range t.Successes {
-		childFinish, dag := p.getFinishTime(p.TaskMap[child])
-		if !dag {
-			return childFinish, false
-		}
-		if childFinish > maxChild {
-			maxChild = childFinish
-		}
-	}
-	for _, child := range t.Failures {
-		childFinish, dag := p.getFinishTime(p.TaskMap[child])
-		if !dag {
-			return childFinish, false
-		}
-		if childFinish > maxChild {
-			maxChild = childFinish
-		}
-	}
-	t.finishTime = 1 + maxChild
-	return t.finishTime, true
-}
-
-const defaultTimeout = 30
-
-func getRemaining(ctx context.Context) time.Duration {
-	deadline, hasDeadline := ctx.Deadline()
-	if !hasDeadline {
-		deadline = time.Now().Add(time.Second * time.Duration(defaultTimeout))
-	}
-
-	remaining := time.Until(deadline)
-	if remaining.Seconds() < 0 {
-		return 0
-	}
-	return remaining
 }
 
 func (p Pipeline) Execute(ctx context.Context) error {
@@ -446,7 +241,7 @@ func (p Pipeline) Execute(ctx context.Context) error {
 			return errors.Wrapf(err, "pipeline %s canceled", p.Name)
 		}
 
-		task, ok := p.TaskMap[taskName]
+		task, ok := p.Tasks[taskName]
 		if !ok {
 			// really shouldn't be possible, but still we'll check
 			return errors.Errorf("pipeline %s missing task named '%s'",
@@ -462,24 +257,26 @@ func (p Pipeline) Execute(ctx context.Context) error {
 			continue
 		}
 
-		logrus.WithField("pipeline", p.Name).
-			Debugf("Preparing input map for task %d: '%s'", idx, taskName)
-		if err := p.addLinkedInput(task, dataMap, statusMap); err != nil {
-			return err
-		}
-
 		buff := bufferPool.Get().(*bytes.Buffer)
 		inUseBuffers = append(inUseBuffers, buff)
 		status := &PipeStatus{State: Running, StartedAt: time.Now().UTC()}
 		statusMap[taskName] = status
 
 		logrus.WithField("pipeline", p.Name).
-			Debugf("Starting task %d '%s' at %v", idx, taskName, status.StartedAt)
+			Debugf("Preparing input map for task %d: '%s'", idx, taskName)
+		if err := p.addLinkedInput(task, dataMap, statusMap); err != nil {
+			return err
+		}
+
+		logrus.WithField("pipeline", p.Name).
+			Debugf("Starting task %d '%s' at %v",
+				idx, taskName, status.StartedAt)
 		err := task.pipe.Execute(pCtx, buff)
 		status.CompletedAt = time.Now().UTC()
 		if err != nil {
 			status.State = Failed
-			// TODO: handle retries; allow failures to 'continue' to execute tasks allowed to do so
+			// TODO: handle retries; allow failures to 'continue' to execute
+			//  tasks allowed to do so
 			return err
 		} else {
 			status.State = Success
@@ -516,6 +313,7 @@ func (p Pipeline) Execute(ctx context.Context) error {
 	return nil
 }
 
+const truncateOutputAt = 1000 // bytes
 func logTaskResult(taskName string, task *Task, content []byte) {
 	if task.DisableResultLog {
 		return
@@ -525,13 +323,13 @@ func logTaskResult(taskName string, task *Task, content []byte) {
 		logrus.Debugf("Task '%s' returned no content", taskName)
 		return
 	}
-	if len(content) < 10000000 {
+	if len(content) < truncateOutputAt {
 		logrus.Debugf("Result for task '%s': %s", taskName, content)
 		return
 	}
 
 	logrus.Debugf("Result for task '%s' (truncated from %d bytes): %s...",
-		taskName, len(content), content[:100])
+		taskName, len(content), content[:truncateOutputAt])
 }
 
 var emptyDataMap = map[string][]byte{}
@@ -611,6 +409,7 @@ func (p *Pipeline) addLinkedInput(task *Task, dataMap map[string][]byte, statusM
 	return task.pipe.Fill(inputMap)
 }
 
+// determine whether a task should execute based on its conditions.
 func (p *Pipeline) shouldExecute(task *Task, statuses map[string]*PipeStatus) (bool, error) {
 	for _, t := range task.Successes {
 		s, ok := statuses[t]
@@ -642,12 +441,18 @@ func (p *Pipeline) shouldExecute(task *Task, statuses map[string]*PipeStatus) (b
 	return true, nil
 }
 
+// bufferPool maintains a pool of reusable byte buffers.
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return new(bytes.Buffer)
 	},
 }
 
+// withBuffer handles executing a function that needs a temporary byte buffer.
+//
+// It automatically pulls a buffer from the buffer pool and ensures the buffer
+// is returned when the function's execution completes, even if the function
+// panics.
 func withBuffer(f func(buf *bytes.Buffer)) {
 	b := bufferPool.Get().(*bytes.Buffer)
 	defer func() {

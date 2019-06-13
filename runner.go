@@ -66,8 +66,8 @@ func (pr *PipelineRunner) RunPipeline(ctx context.Context, name string) (err err
 		}
 
 		go func() {
-			var result PipelineResult
-			runNow(ctx, rp.pipeline, &result)
+			result := new(PipelineResult)
+			runNow(ctx, rp.pipeline, result)
 			logPipelineResult(result)
 		}()
 	})
@@ -79,9 +79,9 @@ type PipelineResult struct {
 	Status   PipeStatus
 }
 
-type PipelineFinished func(result PipelineResult)
+type PipelineFinished func(result *PipelineResult)
 
-func logPipelineResult(r PipelineResult) {
+func logPipelineResult(r *PipelineResult) {
 	if r.Status.Err != nil {
 		logrus.Errorf("Pipeline failed: %+v", r.Status.Err)
 	} else {
@@ -98,8 +98,8 @@ func runPipelineForever(ctx context.Context, p Pipeline, callback PipelineFinish
 	}
 
 	// run once right away
-	var r PipelineResult
-	runNow(ctx, p, &r)
+	r := new(PipelineResult)
+	runNow(ctx, p, r)
 	if callback != nil {
 		callback(r)
 	}
@@ -120,7 +120,7 @@ func runPipelineForever(ctx context.Context, p Pipeline, callback PipelineFinish
 
 // schedule waits until the pipeline should start, runs it, and returns the result;
 // if the context is canceled before the pipeline is started, it returns.
-func schedule(ctx context.Context, pipeline Pipeline) PipelineResult {
+func schedule(ctx context.Context, pipeline Pipeline) *PipelineResult {
 	result := PipelineResult{Pipeline: &pipeline}
 	waitDuration := time.Duration(pipeline.Trigger.Interval.Seconds) * time.Second
 
@@ -134,7 +134,7 @@ func schedule(ctx context.Context, pipeline Pipeline) PipelineResult {
 		result.Status.Err = errors.New("pipeline canceled before execution")
 	}
 
-	return result
+	return &result
 }
 
 func runNow(ctx context.Context, pipeline Pipeline, result *PipelineResult) {

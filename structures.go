@@ -3,6 +3,8 @@ package goplumber
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"github.com/pkg/errors"
 	"text/template"
 	"time"
 )
@@ -58,6 +60,48 @@ type PipeStatus struct {
 	Err         error
 }
 
+// PipeState represents the current execution state of a task or pipeline.
+type PipeState int
+
+const (
+	Waiting = PipeState(iota) // not yet scheduled
+	Running
+	Success
+	Failed     // failed in an unrecoverable way
+	Retrying   // failed, but should retry after updating info about task
+	Archiving  // updating info about a task that failed multiple times
+	Archived   // task failed in a potentially recoverable way, but exceeded retries
+)
+
+func (ps PipeState) MarshalJSON() ([]byte, error) {
+	switch ps {
+	case Waiting:
+		return []byte(`"Waiting"`), nil
+	case Running:
+		return []byte(`"Running"`), nil
+	case Success:
+		return []byte(`"Success"`), nil
+	case Failed:
+		return []byte(`"Failed"`), nil
+	}
+	return nil, errors.New("unknown state")
+}
+
+func (ps PipeStatus) MarshalJSON() ([]byte, error) {
+	type status struct {
+		State       PipeState
+		StartedAt   int64
+		CompletedAt int64
+		Err         string
+	}
+	return json.Marshal(status{
+		State:       ps.State,
+		StartedAt:   ps.StartedAt.UnixNano() / 1e6,
+		CompletedAt: ps.CompletedAt.UnixNano() / 1e6,
+		Err:         fmt.Sprintf("%s", ps.Err),
+	})
+}
+
 // TaskGenerator generates Pipes from Task definitions.
 type TaskGenerator interface {
 	GetPipe(task *Task) (Pipe, error)
@@ -80,4 +124,3 @@ type Backend interface {
 	DataSource
 	Sink
 }
-

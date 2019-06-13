@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"io"
@@ -14,68 +13,19 @@ import (
 	"time"
 )
 
+// Pipe implementers handle the work required to execute a Task.
 type Pipe interface {
-	Fill(input map[string][]byte) error             // accept data from Links
-	Execute(ctx context.Context, w io.Writer) error // perform an operation and write result
+	// Fill accepts data from Links which is mapped as linkName: taskResult.
+	// Fill should return an error if the mapped input data doesn't make sense
+	// for the given Pipe.
+	Fill(input map[string][]byte) error
+	// Execute executes an operation and writes its result to the given writer.
+	// If the Pipe doesn't have a result, it may choose to simply not write
+	// anything. An empty result isn't typically considered an error, but a Task
+	// may choose to view an empty result as an error explicitly.
+	Execute(ctx context.Context, w io.Writer) error
 }
 
-type CachedSource struct {
-	DataSource
-	cached []byte
-}
-
-func (s *CachedSource) Get(ctx context.Context, key string) (val []byte, isDefault bool, err error) {
-	if s.cached != nil {
-		return s.cached, true, nil
-	}
-	val, isDefault, err = s.DataSource.Get(ctx, key)
-	if err == nil {
-		s.cached = val
-	}
-	return val, isDefault, err
-}
-
-func (ps PipeStatus) MarshalJSON() ([]byte, error) {
-	type status struct {
-		State       PipeState
-		StartedAt   int64
-		CompletedAt int64
-		Err         string
-	}
-	return json.Marshal(status{
-		State:       ps.State,
-		StartedAt:   ps.StartedAt.UnixNano() / 1e6,
-		CompletedAt: ps.CompletedAt.UnixNano() / 1e6,
-		Err:         fmt.Sprintf("%s", ps.Err),
-	})
-}
-
-// PipeState represents the current execution state of a task or pipeline.
-type PipeState int
-
-const (
-	Waiting = PipeState(iota) // not yet scheduled
-	Running
-	Success
-	Failed     // failed in an unrecoverable way
-	Retrying   // failed, but should retry after updating info about task
-	Archiving  // updating info about a task that failed multiple times
-	Archived   // task failed in a potentially recoverable way, but exceeded retries
-)
-
-func (ps PipeState) MarshalJSON() ([]byte, error) {
-	switch ps {
-	case Waiting:
-		return []byte(`"Waiting"`), nil
-	case Running:
-		return []byte(`"Running"`), nil
-	case Success:
-		return []byte(`"Success"`), nil
-	case Failed:
-		return []byte(`"Failed"`), nil
-	}
-	return nil, errors.New("unknown state")
-}
 
 func (plumber Plumber) NewPipeline(config []byte) (Pipeline, error) {
 	p := Pipeline{}

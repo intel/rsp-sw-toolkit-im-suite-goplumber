@@ -9,6 +9,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"io"
 	"net"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -209,7 +210,26 @@ type TemplateTask struct {
 	template     *template.Template
 }
 
-func NewTemplateTask(conf []byte, root *template.Template, loader TemplateLoader) (*TemplateTask, error) {
+// LoadTemplateNamespace loads a template namespace from a given source.
+//
+// If the source is a FileSystem and id does not have an extension, .gotmpl is
+// automatically appended to the id.
+func LoadTemplateNamespace(source DataSource, id string) (string, error) {
+	if _, ok := source.(FileSystem); ok && filepath.Ext(id) == "" {
+		id += ".gotmpl"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	body, _, err := source.Get(ctx, id)
+	if ctx.Err() != nil {
+		return "", err
+	}
+
+	return string(body), err
+}
+
+func NewTemplateTask(conf []byte, root *template.Template, loader DataSource) (*TemplateTask, error) {
 	ts := &TemplateTask{}
 	if err := json.Unmarshal(conf, ts); err != nil {
 		return nil, errors.Wrap(err, "failed to unmarshal template task")
@@ -227,7 +247,7 @@ func NewTemplateTask(conf []byte, root *template.Template, loader TemplateLoader
 	// load other templates into this namespace
 	for _, ns := range ts.Namespaces {
 		logrus.Debugf("Loading namespace %s.", ns)
-		data, err := loader.LoadTemplateNamespace(ns)
+		data, err := LoadTemplateNamespace(loader, ns)
 		if err != nil {
 			return nil, errors.Wrapf(err, "failed to load template namespace '%s'", ns)
 		}

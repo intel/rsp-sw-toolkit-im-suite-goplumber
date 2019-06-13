@@ -2,6 +2,7 @@ package goplumber
 
 import (
 	"context"
+	"github.com/sirupsen/logrus"
 	"github.impcloud.net/RSP-Inventory-Suite/expect"
 	"io/ioutil"
 	"net/http"
@@ -11,25 +12,35 @@ import (
 	"time"
 )
 
-var testDataLoader = NewFSLoader("testdata")
-var testMemStore = NewMemoryStore()
-var testDockerSecretsStore = NewDockerSecretsStore("testdata")
+var dataLoader = NewFSLoader("testdata")
+var memoryStore = NewMemoryStore()
+var dockerSecrets = NewFSLoader("testdata")
+
+func init() {
+	logrus.SetLevel(logrus.DebugLevel)
+}
 
 func getTestData(w *expect.TWrapper, filename string) []byte {
 	w.Helper()
-	return w.ShouldHaveResult(testDataLoader.GetFile(filename)).([]byte)
+	return w.ShouldHaveResult(dataLoader.GetFile(filename)).([]byte)
 }
 
-func getTestPipeline(w *expect.TWrapper, name string) Pipeline {
-	conf := getTestData(w, name)
-	pcon := PipelineConnector{
-		TemplateLoader: testDataLoader,
-		KVData:         testMemStore,
-		Secrets:        testDockerSecretsStore,
-	}
-	return w.ShouldHaveResult(NewPipeline(conf, pcon)).(Pipeline)
+func getTestPlumber() Plumber {
+	p := NewPlumber(dataLoader)
+	p.TaskGenerators["secrets"] = NewLoadTaskGenerator(dockerSecrets)
+	p.TaskGenerators["get"] = NewLoadTaskGenerator(memoryStore)
+	p.TaskGenerators["put"] = NewStoreTaskGenerator(memoryStore)
+
+	return p
 }
 
+func getTestPipeline(w *expect.TWrapper, p Plumber, name string) Pipeline {
+	return w.ShouldHaveResult(p.NewPipeline(getTestData(w, name))).(Pipeline)
+}
+
+// contentServer starts serving "content" at a URL. It returns a cleanup function
+// that should be executed after the test completes, allowing syntax like:
+//     defer contentServer(w, content, url)
 func contentServer(w *expect.TWrapper, content []byte, url *string) (cleanup func()) {
 	serv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		w.Logf("content server called; sending: %s", content)
@@ -58,24 +69,63 @@ func destServer(w *expect.TWrapper, expected []byte, url *string) (cleanup func(
 	}
 }
 
+// withDataServer starts a server, executes a function, and then cleans up.
+//
+// The server only lives during the function's execution. The result of calling
+// this function is a map of request paths to their corresponding request bodies,
+// which may be used after execution to validate certain calls were made.
+//
+// The function is called with the URL of the test server, which then may be used
+// for making requests. The server responds to requests by finding a match in the
+// dataMap for the path of the request. If there is no match, it returns 404 and
+// logs the missing endpoint.
+func withDataServer(w *expect.TWrapper, dataMap map[string][]byte, f func(url string)) map[string][]byte {
+	w.Helper()
+	callMap := map[string][]byte{}
+	s := httptest.NewServer(
+		http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+			defer w.ShouldSucceedLater(r.Body.Close)
+			callMap[r.URL.Path] = w.ShouldHaveResult(ioutil.ReadAll(r.Body)).([]byte)
+
+			data, ok := dataMap[r.URL.Path]
+			if !ok {
+				w.Errorf("missing endpoint for %s", r.URL.Path)
+				rw.WriteHeader(404)
+				return
+			}
+
+			w.ShouldHaveResult(rw.Write(data))
+			rw.WriteHeader(200)
+		}))
+	f(s.URL)
+	s.Close()
+	return callMap
+}
+
 func TestPipeline_simpleETL(t *testing.T) {
 	w := expect.WrapT(t)
-	p := getTestPipeline(w, "ETL.json")
+	plumber := getTestPlumber()
+	p := getTestPipeline(w, plumber, "ETL.json")
 	w.ShouldHaveLength(p.Tasks, 3)
 	w.ShouldContain(p.taskOrder, p.Tasks)
 
-	content := []byte(`583671654321`)
-	defer contentServer(w, content, &(p.Tasks["extract"].pipe.(*HTTPTask).URL))()
-	expected := []byte("1988-06-30T11:00:54.321Z")
-	defer destServer(w, expected, &(p.Tasks["load"].pipe.(*HTTPTask).URL))()
+	var destRequests map[string][]byte
+	withDataServer(w, map[string][]byte{"/": []byte(`583671654321`)}, func(srcURL string) {
+		destRequests = withDataServer(w, map[string][]byte{"/": []byte(``)}, func(dstURL string) {
+			p.Tasks["extract"].pipe.(*HTTPTask).URL = srcURL
+			p.Tasks["load"].pipe.(*HTTPTask).URL = dstURL
+			w.ShouldSucceed(p.Execute(context.Background()))
+		})
+	})
 
-	w.ShouldSucceed(p.Execute(context.Background()))
+	w.ShouldContain(destRequests, []string{"/"})
+	w.ShouldBeEqual(destRequests["/"], []byte(`1988-06-30T11:00:54.321Z`))
 }
 
 func TestPipeline_scheduleETL(t *testing.T) {
 	// setup the ETL pipeline
 	w := expect.WrapT(t)
-	p := getTestPipeline(w, "ETL.json")
+	p := getTestPipeline(w, getTestPlumber(), "ETL.json")
 	w.ShouldHaveLength(p.Tasks, 3)
 	w.ShouldContain(p.taskOrder, p.Tasks)
 

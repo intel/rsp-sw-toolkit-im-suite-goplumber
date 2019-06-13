@@ -28,7 +28,7 @@ func TestPipeline_sortTasks_oneDep(t *testing.T) {
 		"a": {"b"},
 		"b": {},
 	})
-	w.ShouldSucceed(p.checkTasks())
+	w.ShouldSucceed(checkTasks(p))
 	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
 	w.Log(taskOrder)
 	w.ShouldBeEqual(taskOrder, []string{"b", "a"})
@@ -41,7 +41,7 @@ func TestPipeline_sortTasks_independentTasks(t *testing.T) {
 		"b": {},
 		"c": {},
 	})
-	w.ShouldSucceed(p.checkTasks())
+	w.ShouldSucceed(checkTasks(p))
 	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
 	w.Log(taskOrder)
 	w.ShouldContain(taskOrder, p.Tasks)
@@ -54,7 +54,7 @@ func TestPipeline_sortTasks_nonChain(t *testing.T) {
 		"c": {"b"},
 		"b": {},
 	})
-	w.ShouldSucceed(p.checkTasks())
+	w.ShouldSucceed(checkTasks(p))
 	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
 	w.Log(taskOrder)
 	w.ShouldBeEqual(taskOrder[0], "b")
@@ -68,7 +68,7 @@ func TestPipeline_sortTasks_chain(t *testing.T) {
 		"c": {"a"},
 		"b": {},
 	})
-	w.ShouldSucceed(p.checkTasks())
+	w.ShouldSucceed(checkTasks(p))
 	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
 	w.Log(taskOrder)
 	w.ShouldBeEqual(taskOrder, []string{"b", "a", "c"})
@@ -83,7 +83,7 @@ func TestPipeline_sortTasks_longChain(t *testing.T) {
 		"d": {"e"},
 		"e": {},
 	})
-	w.ShouldSucceed(p.checkTasks())
+	w.ShouldSucceed(checkTasks(p))
 	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
 	w.Log(taskOrder)
 	w.ShouldContain(taskOrder[0:2], []string{"e", "b"})
@@ -99,7 +99,7 @@ func TestPipeline_sortTasks_diamond(t *testing.T) {
 		"d": {},
 		"e": {"a"},
 	})
-	w.ShouldSucceed(p.checkTasks())
+	w.ShouldSucceed(checkTasks(p))
 	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
 	w.Log(taskOrder)
 	w.ShouldBeEqual(taskOrder[0], "d")
@@ -114,7 +114,7 @@ func TestPipeline_sortTasks_cycles(t *testing.T) {
 		"b": {"c"},
 		"c": {"a"},
 	})
-	w.ShouldSucceed(p.checkTasks())
+	w.ShouldSucceed(checkTasks(p))
 	w.Log(w.ShouldHaveError(sortTasks(p.Tasks)))
 
 	p = makeDependencyPipe(map[string][]string{
@@ -122,7 +122,7 @@ func TestPipeline_sortTasks_cycles(t *testing.T) {
 		"c": {"a"},
 		"b": {},
 	})
-	w.ShouldSucceed(p.checkTasks())
+	w.ShouldSucceed(checkTasks(p))
 	w.Log(w.ShouldHaveError(sortTasks(p.Tasks)))
 }
 
@@ -137,6 +137,7 @@ func TestPipeline_sortTasks_longCycle(t *testing.T) {
 		"f": {"a", "b", "c"},
 		"g": {"d", "e", "f"},
 	})
-	w.ShouldSucceed(p.checkTasks())
+	w.ShouldSucceed(checkTasks(p))
 	w.Log(w.ShouldHaveError(sortTasks(p.Tasks)))
 }
+

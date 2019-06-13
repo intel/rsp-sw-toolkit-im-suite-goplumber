@@ -10,6 +10,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 )
 
@@ -19,7 +20,7 @@ type Pipe interface {
 }
 
 type CachedSource struct {
-	PipelineSource
+	DataSource
 	cached []byte
 }
 
@@ -27,7 +28,7 @@ func (s *CachedSource) Get(ctx context.Context, key string) (val []byte, isDefau
 	if s.cached != nil {
 		return s.cached, true, nil
 	}
-	val, isDefault, err = s.PipelineSource.Get(ctx, key)
+	val, isDefault, err = s.DataSource.Get(ctx, key)
 	if err == nil {
 		s.cached = val
 	}
@@ -76,109 +77,7 @@ func (ps PipeState) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("unknown state")
 }
 
-type PipelineConnector struct {
-	TemplateLoader TemplateLoader
-	KVData         PipelineStore
-	Secrets        PipelineStore
-}
-
-type TaskType = string
-type TaskTypeMap = map[TaskType]TaskGenerator
-type StoreType = string
-type StoreTypeMap = map[StoreType]PipelineStore
-
-// Plumber is used to create pipelines.
-type Plumber struct {
-	// TemplateLoader tells the Plumber from where it should load templates.
-	TemplateLoader TemplateLoader
-	// TaskTypes define how the Plumber maps task types to Pipes when creating tasks.
-	TaskTypes TaskTypeMap
-	// StoreTypes tell the Plumber what stores to use when loading/storing data.
-	StoreTypes StoreTypeMap
-}
-
-// Returns a new Plumber with the given template loader and default task types.
-//
-// You can modify the TaskTypes map to change how tasks are constructed (and which
-// tasks are allowed). Modify the StoreTypes to add or remove storage backends
-// for load/store tasks.
-func NewPlumber(tl TemplateLoader, storeTypeMap StoreTypeMap) Plumber {
-	var defaultGenerators = map[StoreType]TaskGenerator{
-		"http":       SimpleTask(func() Pipe { return &HTTPTask{} }),
-		"mqtt":       SimpleTask(func() Pipe { return NewMQTTTask() }),
-		"json":       SimpleTask(func() Pipe { return &JSONTask{} }),
-		"validation": SimpleTask(func() Pipe { return &JSONValidationTask{} }),
-		"secret": SimpleTask(func() Pipe {
-			return &LoadStoreTask{
-				store:  storeTypeMap["secrets"],
-				isLoad: false,
-			}
-		}),
-		"put": SimpleTask(func() Pipe {
-			return &LoadStoreTask{
-				store:  storeTypeMap["memory"],
-				isLoad: false,
-			}
-		}),
-		"get": TaskFunc(func(t *Task) (Pipe, error) {
-			p, err := SimpleTask(func() Pipe {
-				return &LoadStoreTask{
-					store:  storeTypeMap["memory"],
-					isLoad: false,
-				}
-			}).GetPipe(t)
-			if err != nil {
-				return nil, err
-			}
-			lst := p.(*LoadStoreTask)
-			store, ok := storeTypeMap[lst.Source]
-			if !ok {
-				return nil, errors.Errorf("unknown store '%s'", lst.Source)
-			}
-			lst.store = store
-			return lst, nil
-		}),
-	}
-
-	p := Plumber{
-		TemplateLoader: tl,
-		TaskTypes:      defaultGenerators,
-		StoreTypes:     StoreTypeMap{},
-	}
-
-	return p
-}
-
-type SimpleTask func() Pipe
-
-func (f SimpleTask) GetPipe(task *Task) (Pipe, error) {
-	pipe := f()
-
-	if len(task.Raw) != 0 {
-		if err := json.Unmarshal(task.Raw, pipe); err != nil {
-			return nil, err
-		}
-	}
-	return pipe, nil
-}
-
-type TaskFunc func(t *Task) (Pipe, error)
-
-func (f TaskFunc) GetPipe(task *Task) (Pipe, error) {
-	pipe, err := f(task)
-	if err != nil {
-		return pipe, err
-	}
-
-	if len(task.Raw) != 0 {
-		if err := json.Unmarshal(task.Raw, pipe); err != nil {
-			return nil, err
-		}
-	}
-	return pipe, err
-}
-
-func NewPipeline(config []byte, pcon PipelineConnector) (Pipeline, error) {
+func (plumber Plumber) NewPipeline(config []byte) (Pipeline, error) {
 	p := Pipeline{}
 	if err := json.Unmarshal(config, &p); err != nil {
 		return p, errors.Wrap(err, "failed to unmarshal pipeline config")
@@ -186,13 +85,18 @@ func NewPipeline(config []byte, pcon PipelineConnector) (Pipeline, error) {
 	if p.Name == "" {
 		return p, errors.New("pipeline must have a name")
 	}
-	if err := p.loadTemplates(pcon.TemplateLoader); err != nil {
+
+	rootNamespace, err := plumber.createRootTmpl(p.TemplateRefs)
+	if err != nil {
 		return p, err
 	}
-	if err := p.checkTasks(); err != nil {
+	p.rootNamespace = rootNamespace
+
+	if err := checkTasks(&p); err != nil {
 		return p, err
 	}
-	if err := p.initTasks(pcon); err != nil {
+
+	if err := plumber.initTasks(&p); err != nil {
 		return p, err
 	}
 
@@ -205,57 +109,54 @@ func NewPipeline(config []byte, pcon PipelineConnector) (Pipeline, error) {
 	return p, nil
 }
 
-// LoadTemplates uses a given loader to load the pipeline's templates.
-func (p *Pipeline) loadTemplates(loader TemplateLoader) error {
+// createRootTmpl loads a set of namespaces into a template.
+func (plumber Plumber) createRootTmpl(namespaces []string) (*template.Template, error) {
 	tmpl, err := baseTmpl.Clone()
 	if err != nil {
-		return errors.Wrapf(err, "unable to clone base template")
+		return nil, errors.Wrapf(err, "unable to clone base template")
 	}
-	p.rootNamespace = tmpl
 
-	for idx, id := range p.TemplateRefs {
+	for idx, id := range namespaces {
 		if id == "" {
-			return errors.Errorf("template reference #%d has no ID", idx)
+			return nil, errors.Errorf("template reference #%d has no ID", idx)
 		}
-		tmplVal, err := loader.LoadTemplateNamespace(id)
+		tmplVal, err := LoadTemplateNamespace(plumber.TemplateSource, id)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if _, err := p.rootNamespace.
-			Option("missingkey=error").
-			Parse(tmplVal); err != nil {
-			return err
+
+		if _, err := tmpl.Option("missingkey=error").Parse(tmplVal); err != nil {
+			return nil, err
 		}
 	}
 
 	// make sure all declared templates are defined
 	var missing []string
 	var allTmpls []string
-	for _, tmpl := range p.rootNamespace.Templates() {
-		if p.rootNamespace.Lookup(tmpl.Name()) == nil {
+	for _, tmpl := range tmpl.Templates() {
+		if tmpl.Lookup(tmpl.Name()) == nil {
 			missing = append(missing, tmpl.Name())
 		}
 		if logrus.IsLevelEnabled(logrus.DebugLevel) {
 			allTmpls = append(allTmpls, tmpl.Name())
 		}
 	}
+
 	logrus.WithField("defined templates", allTmpls).
-		WithField("missing", missing).
-		WithField("pipeline", p.Name).
 		Debug("Parsing complete.")
 	if len(missing) != 0 {
-		return errors.Errorf("missing template definitions for: %s",
+		return nil, errors.Errorf("missing template definitions for: %s",
 			strings.Join(missing, ", "))
 	}
 
-	return nil
+	return tmpl, nil
 }
 
 // CheckTasks verifies that task definitions are valid.
 //
 // It checks the tasks all have a name, that all links have a matching task,
 // and all named templates are loaded.
-func (p *Pipeline) checkTasks() error {
+func checkTasks(p *Pipeline) error {
 	for taskName, task := range p.Tasks {
 		if taskName == "" {
 			return errors.New("all tasks must have a name")
@@ -321,20 +222,22 @@ func (p *Pipeline) checkTasks() error {
 	return nil
 }
 
-func (p *Pipeline) initTasks2(plumber Plumber) error {
+// initTasks uses the Plumber to initialize the pipeline's tasks.
+func (plumber Plumber) initTasks(p *Pipeline) error {
 	for taskName, task := range p.Tasks {
 		if task.TaskType == "template" {
 			// handle templates a bit differently -- template names MUST be 'raw',
 			// and we use the root namespace associated with the pipeline.
-			ts, err := NewTemplateTask(task.Raw, p.rootNamespace, plumber.TemplateLoader)
+			ts, err := NewTemplateTask(task.Raw, p.rootNamespace, plumber.TemplateSource)
 			if err != nil {
 				return errors.Wrapf(err, "pipeline %s failed to create "+
 					"template task '%s'", p.Name, taskName)
 			}
 			task.pipe = ts
+			continue
 		}
 
-		generator, ok := plumber.TaskTypes[task.TaskType]
+		generator, ok := plumber.TaskGenerators[task.TaskType]
 		if !ok {
 			return errors.Errorf("pipeline %s defines task '%s' with "+
 				"unknown type '%s'", p.Name, taskName, task.TaskType)
@@ -352,56 +255,6 @@ func (p *Pipeline) initTasks2(plumber Plumber) error {
 			WithField("taskType", task.TaskType).
 			WithField("taskName", taskName).
 			Debugf("initialized task")
-	}
-	return nil
-}
-
-// initTasks initializes the task instances from their raw configurations.
-func (p *Pipeline) initTasks(pcon PipelineConnector) error {
-	for taskName, task := range p.Tasks {
-		hasRaw := len(task.Raw) != 0
-		switch task.TaskType {
-		case "template":
-			// handle templates a bit differently -- template names MUST be 'raw',
-			// and we use the root namespace associated with the pipeline.
-			ts, err := NewTemplateTask(task.Raw, p.rootNamespace, pcon.TemplateLoader)
-			if err != nil {
-				return err
-			}
-			task.pipe = ts
-		case "http":
-			// todo: allow configuring the http client
-			task.pipe = &HTTPTask{}
-		case "mqtt":
-			task.pipe = NewMQTTTask()
-		case "json":
-			task.pipe = &JSONTask{}
-		case "validation":
-			task.pipe = &JSONValidationTask{}
-		case "secret":
-			task.DisableResultLog = true
-			task.pipe = &LoadStoreTask{
-				store:  pcon.Secrets,
-				isLoad: true,
-			}
-		case "get", "put":
-			task.pipe = &LoadStoreTask{
-				store:  pcon.KVData,
-				isLoad: task.TaskType == "get",
-			}
-		default:
-			return errors.Errorf("pipeline %s has unknown task type '%s'",
-				p.Name, task.TaskType)
-		}
-		if hasRaw {
-			if err := json.Unmarshal(task.Raw, task.pipe); err != nil {
-				return errors.Wrapf(err, "pipeline %s failed to init %s task '%s'",
-					p.Name, task.TaskType, taskName)
-			}
-		}
-		logrus.WithField("pipeline", p.Name).
-			Debugf("initialized %s task '%s'",
-				task.TaskType, taskName)
 	}
 	return nil
 }
@@ -454,24 +307,26 @@ func (p Pipeline) Execute(ctx context.Context) error {
 			continue
 		}
 
-		logrus.WithField("pipeline", p.Name).
-			Debugf("Preparing input map for task %d: '%s'", idx, taskName)
-		if err := p.addLinkedInput(task, dataMap, statusMap); err != nil {
-			return err
-		}
-
 		buff := bufferPool.Get().(*bytes.Buffer)
 		inUseBuffers = append(inUseBuffers, buff)
 		status := &PipeStatus{State: Running, StartedAt: time.Now().UTC()}
 		statusMap[taskName] = status
 
 		logrus.WithField("pipeline", p.Name).
-			Debugf("Starting task %d '%s' at %v", idx, taskName, status.StartedAt)
+			Debugf("Preparing input map for task %d: '%s'", idx, taskName)
+		if err := p.addLinkedInput(task, dataMap, statusMap); err != nil {
+			return err
+		}
+
+		logrus.WithField("pipeline", p.Name).
+			Debugf("Starting task %d '%s' at %v",
+				idx, taskName, status.StartedAt)
 		err := task.pipe.Execute(pCtx, buff)
 		status.CompletedAt = time.Now().UTC()
 		if err != nil {
 			status.State = Failed
-			// TODO: handle retries; allow failures to 'continue' to execute tasks allowed to do so
+			// TODO: handle retries; allow failures to 'continue' to execute
+			//  tasks allowed to do so
 			return err
 		} else {
 			status.State = Success

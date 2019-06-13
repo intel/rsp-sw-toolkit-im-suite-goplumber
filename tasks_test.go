@@ -1,13 +1,8 @@
 package goplumber
 
 import (
-	"context"
-	"fmt"
 	"github.com/sirupsen/logrus"
 	"github.impcloud.net/RSP-Inventory-Suite/expect"
-	"io/ioutil"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 )
 
@@ -88,48 +83,4 @@ func TestUnmarshalPartial(t *testing.T) {
 	w.ShouldBeEqual(starter.c, 0.0)
 	w.ShouldBeEqual(starter.d, Struct{})
 	w.ShouldBeEqual(starter.F, Struct{})
-}
-
-// Test downloading from one HTTP server and sending it to another.
-func TestDownloadAndSend(t *testing.T) {
-	w := expect.WrapT(t).StopOnMismatch()
-
-	content := []byte(`hello, world`)
-	contentServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		w.Logf("content server called; sending: %s", content)
-		w.ShouldHaveResult(rw.Write(content))
-	}))
-	defer contentServer.Close()
-
-	destMethod := "POST"
-	destServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		w.ShouldBeEqual(r.Method, destMethod)
-		incoming := w.ShouldHaveResult(ioutil.ReadAll(r.Body)).([]byte)
-		w.ShouldBeEqual(incoming, content)
-	}))
-	defer destServer.Close()
-
-	pipeline := &Pipeline{
-		Tasks: map[string]*Task{
-			"getContent": {
-				TaskType: "http",
-				Raw: []byte(fmt.Sprintf(`{"url":"%s", "method": "GET"}`,
-					contentServer.URL)),
-			},
-			"sendContent": {
-				TaskType: "http",
-				Links:    map[string]Link{"body": {Source: "getContent"}},
-				Raw: []byte(fmt.Sprintf(`{"url":"%s", "method":"%s"}`,
-					destServer.URL, destMethod)),
-			},
-		},
-	}
-
-	w.ShouldSucceed(pipeline.initTasks(PipelineConnector{
-		TemplateLoader: NewFSLoader("testdata"),
-		KVData:         NewMemoryStore(),
-	}))
-	pipeline.taskOrder = []string{"getContent", "sendContent"}
-
-	w.ShouldSucceed(pipeline.Execute(context.Background()))
 }

@@ -41,10 +41,6 @@ type Link struct {
 	Elem   *string `json:"elem,omitempty"`
 }
 
-type Condition struct {
-	Source string `json:"source"`
-}
-
 type Interval struct {
 	Seconds int64 `json:"seconds"`
 }
@@ -62,31 +58,26 @@ type PipeStatus struct {
 	Err         error
 }
 
-// TaskGenerator generates
+// TaskGenerator generates Pipes from Task definitions.
 type TaskGenerator interface {
 	GetPipe(task *Task) (Pipe, error)
 }
 
-// TemplateLoader loads templates.
-type TemplateLoader interface {
-	// LoadTemplate returns the template data for a given template reference.
-	LoadTemplateNamespace(id string) (string, error)
-}
-
-// PipelineSource returns data from a source, or possibly a default value if the
+// DataSource returns data from a source, or possibly a default value if the
 // key wasn't present. If the source returns a default, it should indicate this
 // by returning `false` for wasPresent.
-type PipelineSource interface {
+type DataSource interface {
 	Get(ctx context.Context, key string) (data []byte, wasPresent bool, err error)
 }
 
-// PipelineSink accepts a single <key, value> pair, presumably to store it.
-type PipelineSink interface {
+// Sink accepts a single <key, value> pair, presumably to store it.
+type Sink interface {
 	Put(ctx context.Context, key string, value []byte) error
 }
 
-// PipelineStore gets and stores <key, value> pairs for a pipeline.
-type PipelineStore interface {
-	PipelineSource
-	PipelineSink
+// Backend implementers can load and store <key, value> pairs for a pipeline.
+type Backend interface {
+	DataSource
+	Sink
 }
+

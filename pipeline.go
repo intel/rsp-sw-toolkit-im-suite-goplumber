@@ -196,7 +196,7 @@ func (plumber Plumber) initTasks(p *Pipeline) error {
 		var err error
 		task.pipe, err = generator.GetPipe(task)
 		if err != nil {
-			return errors.Errorf("pipeline %s failed to create %s task named '%s'",
+			return errors.Wrapf(err, "pipeline %s failed to create %s task named '%s'",
 				p.Name, task.TaskType, taskName)
 		}
 

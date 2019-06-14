@@ -14,7 +14,6 @@ import (
 
 var dataLoader = NewFSLoader("testdata")
 var memoryStore = NewMemoryStore()
-var dockerSecrets = NewFSLoader("testdata")
 
 func init() {
 	logrus.SetLevel(logrus.DebugLevel)
@@ -27,7 +26,7 @@ func getTestData(w *expect.TWrapper, filename string) []byte {
 
 func getTestPlumber() Plumber {
 	p := NewPlumber(dataLoader)
-	p.TaskGenerators["secrets"] = NewLoadTaskGenerator(dockerSecrets)
+	p.TaskGenerators["secret"] = NewLoadTaskGenerator(dataLoader)
 	p.TaskGenerators["get"] = NewLoadTaskGenerator(memoryStore)
 	p.TaskGenerators["put"] = NewStoreTaskGenerator(memoryStore)
 
@@ -45,21 +44,6 @@ func contentServer(w *expect.TWrapper, content []byte, url *string) (cleanup fun
 	serv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		w.Logf("content server called; sending: %s", content)
 		w.ShouldHaveResult(rw.Write(content))
-	}))
-	if url != nil {
-		*url = serv.URL
-	}
-	return func() {
-		serv.Close()
-	}
-}
-
-func destServer(w *expect.TWrapper, expected []byte, url *string) (cleanup func()) {
-	serv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		w.Logf("dest server called with method %s", r.Method)
-		w.ShouldBeEqual(r.Method, "POST")
-		incoming := w.ShouldHaveResult(ioutil.ReadAll(r.Body)).([]byte)
-		w.ShouldBeEqual(expected, incoming)
 	}))
 	if url != nil {
 		*url = serv.URL
@@ -134,7 +118,7 @@ func TestPipeline_scheduleETL(t *testing.T) {
 
 	// record how many times the destination server is called
 	mtx := sync.Mutex{}
-	timesCalled := []time.Time{}
+	var timesCalled []time.Time
 	destServer := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		mtx.Lock()
 		timesCalled = append(timesCalled, time.Now())

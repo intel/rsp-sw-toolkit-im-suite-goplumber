@@ -21,18 +21,23 @@ import (
 	"time"
 )
 
+// LoadTask loads data from a DataSource using a key. If the key isn't present,
+// it'll return the Default, which may be nil.
 type LoadTask struct {
 	Key     string `json:"name"`
 	Default json.RawMessage
 	source  DataSource
 }
 
+// StoreTask sends data to a Sink.
 type StoreTask struct {
 	Key   string `json:"name"`
 	Value []byte
 	sink  Sink
 }
 
+// NewLoadTaskGenerator returns a TaskGenerator that generates LoadTasks using
+// the given DataSource.
 func NewLoadTaskGenerator(source DataSource) TaskGenerator {
 	return TaskFunc(func(task *Task) (Pipe, error) {
 		pipe := LoadTask{source: source}
@@ -47,19 +52,12 @@ func NewLoadTaskGenerator(source DataSource) TaskGenerator {
 // the given data Sink.
 func NewStoreTaskGenerator(sink Sink) TaskGenerator {
 	return TaskFunc(func(task *Task) (Pipe, error) {
-		pipe := StoreTask{sink: sink}
-		if err := json.Unmarshal(task.Raw, pipe); err != nil {
-			return nil, err
-		}
-		return &pipe, nil
+		return &StoreTask{sink: sink}, nil
 	})
 }
 
 func (task *LoadTask) Fill(d map[string][]byte) error {
-	if err := unmarshalPartial(d, task); err != nil {
-		return err
-	}
-	return nil
+	return unmarshalPartial(d, task)
 }
 
 func (task *LoadTask) Execute(ctx context.Context, w io.Writer) error {
@@ -74,15 +72,14 @@ func (task *LoadTask) Execute(ctx context.Context, w io.Writer) error {
 		logrus.Debugf("missing %s; using default %s", task.Key, task.Default)
 		v = task.Default
 	}
-	_, err = w.Write(v)
+	if v != nil {
+		_, err = w.Write(v)
+	}
 	return err
 }
 
 func (task *StoreTask) Fill(d map[string][]byte) error {
-	if task.Key == "" {
-		return errors.New("missing key name")
-	}
-	return nil
+	return unmarshalPartial(d, task)
 }
 
 func (task *StoreTask) Execute(ctx context.Context, w io.Writer) error {
@@ -92,6 +89,7 @@ func (task *StoreTask) Execute(ctx context.Context, w io.Writer) error {
 	return task.sink.Put(ctx, task.Key, task.Value)
 }
 
+// HTTPTask executes an HTTP request.
 type HTTPTask struct {
 	client         *http.Client
 	bodyReader     io.Reader

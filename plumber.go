@@ -2,6 +2,7 @@ package goplumber
 
 import (
 	"encoding/json"
+	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"reflect"
 )
@@ -42,7 +43,7 @@ func (f SimpleTask) GetPipe(task *Task) (Pipe, error) {
 	pipe := f()
 	if len(task.Raw) != 0 {
 		if err := json.Unmarshal(task.Raw, pipe); err != nil {
-			return nil, err
+			return nil, errors.WithStack(err)
 		}
 	}
 	return pipe, nil
@@ -53,11 +54,11 @@ type TaskFunc func(task *Task) (Pipe, error)
 func (f TaskFunc) GetPipe(task *Task) (Pipe, error) {
 	pipe, err := f(task)
 	if err != nil {
-		return nil, err
+		return nil, errors.WithStack(err)
 	}
 	if len(task.Raw) != 0 {
 		if err := json.Unmarshal(task.Raw, pipe); err != nil {
-			return nil, err
+			return nil, errors.WithStack(err)
 		}
 	}
 	return pipe, nil

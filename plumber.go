@@ -54,7 +54,8 @@ type TaskFunc func(task *Task) (Pipe, error)
 func (f TaskFunc) GetPipe(task *Task) (Pipe, error) {
 	pipe, err := f(task)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, errors.Wrapf(err, "failed to create task of type '%s'",
+			task.TaskType)
 	}
 	if len(task.Raw) != 0 {
 		if err := json.Unmarshal(task.Raw, pipe); err != nil {

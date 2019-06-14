@@ -40,11 +40,7 @@ type StoreTask struct {
 // the given DataSource.
 func NewLoadTaskGenerator(source DataSource) TaskGenerator {
 	return TaskFunc(func(task *Task) (Pipe, error) {
-		pipe := LoadTask{source: source}
-		if err := json.Unmarshal(task.Raw, pipe); err != nil {
-			return nil, err
-		}
-		return &pipe, nil
+		return &LoadTask{source: source}, nil
 	})
 }
 

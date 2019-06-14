@@ -26,7 +26,6 @@ type Pipe interface {
 	Execute(ctx context.Context, w io.Writer) error
 }
 
-
 func (plumber Plumber) NewPipeline(config []byte) (Pipeline, error) {
 	p := Pipeline{}
 	if err := json.Unmarshal(config, &p); err != nil {
@@ -184,20 +183,20 @@ func (plumber Plumber) initTasks(p *Pipeline) error {
 					"template task '%s'", p.Name, taskName)
 			}
 			task.pipe = ts
-			continue
-		}
+		} else {
+			generator, ok := plumber.TaskGenerators[task.TaskType]
+			if !ok {
+				return errors.Errorf("pipeline %s defines task '%s' with "+
+					"unknown type '%s'", p.Name, taskName, task.TaskType)
+			}
 
-		generator, ok := plumber.TaskGenerators[task.TaskType]
-		if !ok {
-			return errors.Errorf("pipeline %s defines task '%s' with "+
-				"unknown type '%s'", p.Name, taskName, task.TaskType)
-		}
-
-		var err error
-		task.pipe, err = generator.GetPipe(task)
-		if err != nil {
-			return errors.Wrapf(err, "pipeline %s failed to create %s task named '%s'",
-				p.Name, task.TaskType, taskName)
+			var err error
+			task.pipe, err = generator.GetPipe(task)
+			if err != nil {
+				return errors.Wrapf(err,
+					"pipeline %s failed to create %s task named '%s'",
+					p.Name, task.TaskType, taskName)
+			}
 		}
 
 		logrus.

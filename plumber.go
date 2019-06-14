@@ -78,3 +78,4 @@ func NewGenerator(i interface{}) TaskGenerator {
 		return pipe, nil
 	})
 }
+

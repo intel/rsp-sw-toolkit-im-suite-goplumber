@@ -495,7 +495,7 @@ func unmarshalPartial(partial map[string][]byte, s interface{}) error {
 func getRemaining(ctx context.Context) time.Duration {
 	deadline, hasDeadline := ctx.Deadline()
 	if !hasDeadline {
-		deadline = time.Now().Add(time.Second * time.Duration(defaultTimeout))
+		deadline = time.Now().Add(time.Second * time.Duration(defaultTimeoutSecs))
 	}
 
 	remaining := time.Until(deadline)

@@ -7,7 +7,7 @@ import (
 )
 
 func makeDependencyPipe(d map[string][]string) *Pipeline {
-	tm := map[string]*Task{}
+	tm := taskMap{}
 	for taskName, dependencies := range d {
 		if len(dependencies) == 0 {
 			tm[taskName] = &Task{}

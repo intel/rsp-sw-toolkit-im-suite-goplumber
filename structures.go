@@ -9,10 +9,9 @@ import (
 	"time"
 )
 
+const defaultTimeoutSecs = 30
+
 type taskMap = map[string]*Task
-
-const defaultTimeout = 30
-
 type Pipeline struct {
 	Name          string   `json:"name"`
 	Description   string   `json:"description"`
@@ -49,7 +48,7 @@ type Interval struct {
 
 type Trigger struct {
 	Interval Interval `json:"interval,omitempty"` // run the pipeline every N seconds
-	HTTP     bool     `json:"webhook,omitempty"`  // run when triggered by a POST call matching the pipeline name
+	// HTTP     bool     `json:"webhook,omitempty"`  // run when triggered by a POST call matching the pipeline name
 }
 
 // PipeStatus is used to track the status of either a pipeline or a task.
@@ -64,13 +63,11 @@ type PipeStatus struct {
 type PipeState int
 
 const (
-	Waiting = PipeState(iota) // not yet scheduled
+	Waiting = PipeState(iota) // not running/failed
 	Running
 	Success
-	Failed     // failed in an unrecoverable way
-	Retrying   // failed, but should retry after updating info about task
-	Archiving  // updating info about a task that failed multiple times
-	Archived   // task failed in a potentially recoverable way, but exceeded retries
+	Failed     // failed in an unrecoverable way, or exceeded retries
+	Retrying   // failed, but might be able to succeed after retry
 )
 
 func (ps PipeState) MarshalJSON() ([]byte, error) {
@@ -83,6 +80,8 @@ func (ps PipeState) MarshalJSON() ([]byte, error) {
 		return []byte(`"Success"`), nil
 	case Failed:
 		return []byte(`"Failed"`), nil
+	case Retrying:
+		return []byte(`"Retrying"`), nil
 	}
 	return nil, errors.New("unknown state")
 }

@@ -26,6 +26,9 @@ type Pipe interface {
 	Execute(ctx context.Context, w io.Writer) error
 }
 
+// NewPipeline uses the Plumber to construct a Pipeline.
+//
+// The Plumber unmarshals the configuration
 func (plumber Plumber) NewPipeline(config []byte) (Pipeline, error) {
 	p := Pipeline{}
 	if err := json.Unmarshal(config, &p); err != nil {
@@ -171,7 +174,7 @@ func checkTasks(p *Pipeline) error {
 	return nil
 }
 
-// initTasks uses the Plumber to initialize the pipeline's tasks.
+// initTasks uses the Plumber to construct Pipes for each of the Pipeline's Tasks.
 func (plumber Plumber) initTasks(p *Pipeline) error {
 	for taskName, task := range p.Tasks {
 		if task.TaskType == "template" {
@@ -208,25 +211,32 @@ func (plumber Plumber) initTasks(p *Pipeline) error {
 	return nil
 }
 
+// Execute a Pipeline by running each task in dependency order until either the
+// Pipeline is complete, or a Task indicates that the Pipeline should not continue.
+//
+// Execution may also be canceled via the Context, but only for tasks that play
+// nice with cancellation requests.
 func (p Pipeline) Execute(ctx context.Context) error {
 	if p.TimeoutSecs < 1 {
-		logrus.WithField("pipeline", p.Name).Debugf("Pipeline '%s' has no configured timeout; using default %d",
-			p.Name, defaultTimeout)
-		p.TimeoutSecs = defaultTimeout
+		logrus.WithField("pipeline", p.Name).
+			Debugf("Pipeline '%s' has no configured timeout; using default: %d seconds",
+				p.Name, defaultTimeoutSecs)
+		p.TimeoutSecs = defaultTimeoutSecs
 	}
 
 	timeout := time.Duration(p.TimeoutSecs) * time.Second
 	pCtx, curCancel := context.WithTimeout(ctx, timeout)
 	defer curCancel()
 
-	logrus.WithField("pipeline", p.Name).Debugf("Starting pipeline '%s' with timeout %ds",
-		p.Name, p.TimeoutSecs)
+	logrus.
+		WithField("pipeline", p.Name).
+		WithField("timeout", p.TimeoutSecs).
+		Debugf("Starting pipeline.")
 
 	// make a map for outputs from earlier stages used in later ones
 	dataMap := make(map[string][]byte)
 	statusMap := make(map[string]*PipeStatus)
 
-	// need a buffer for each template tasks (for the output, that is).
 	inUseBuffers := make([]*bytes.Buffer, 0)
 	defer func() {
 		for _, b := range inUseBuffers {
@@ -235,8 +245,16 @@ func (p Pipeline) Execute(ctx context.Context) error {
 		}
 	}()
 
+	logTask := func(idx int, msg string) {
+		logrus.WithField("pipeline", p.Name).
+			WithField("task", p.taskOrder[idx]).
+			WithField("index", idx).
+			Debug(msg)
+	}
+
 	for idx, taskName := range p.taskOrder {
 		if err := pCtx.Err(); err != nil {
+			logTask(idx, "pipeline canceled")
 			return errors.Wrapf(err, "pipeline %s canceled", p.Name)
 		}
 
@@ -251,8 +269,7 @@ func (p Pipeline) Execute(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			logrus.WithField("pipeline", p.Name).
-				Debugf("Skipping task %d: '%s'", idx, taskName)
+			logTask(idx, "Skipping task.")
 			continue
 		}
 
@@ -261,23 +278,22 @@ func (p Pipeline) Execute(ctx context.Context) error {
 		status := &PipeStatus{State: Running, StartedAt: time.Now().UTC()}
 		statusMap[taskName] = status
 
-		logrus.WithField("pipeline", p.Name).
-			Debugf("Preparing input map for task %d: '%s'", idx, taskName)
+		logTask(idx, "Preparing input map.")
 		if err := p.addLinkedInput(task, dataMap, statusMap); err != nil {
 			return err
 		}
 
-		logrus.WithField("pipeline", p.Name).
-			Debugf("Starting task %d '%s' at %v",
-				idx, taskName, status.StartedAt)
+		logTask(idx, "Starting task.")
 		err := task.pipe.Execute(pCtx, buff)
 		status.CompletedAt = time.Now().UTC()
 		if err != nil {
+			logTask(idx, "Task failed.")
 			status.State = Failed
 			// TODO: handle retries; allow failures to 'continue' to execute
 			//  tasks allowed to do so
 			return err
 		} else {
+			logTask(idx, "Task succeeded.")
 			status.State = Success
 		}
 
@@ -292,17 +308,19 @@ func (p Pipeline) Execute(ctx context.Context) error {
 					"content and is configured to consider this an error", p.Name, taskName)
 			}
 			if task.StopIfEmpty {
-				logrus.WithField("pipeline", p.Name).
-					Debugf("Stopping at task '%s' because its result "+
-						"is empty and it's configured to stop in such a case.", taskName)
+				logTask(idx, "Stopping pipeline because due to empty task result.")
 				return nil
 			}
+
+			// no longer need this buffer
+			popBuffer(&inUseBuffers)
 		}
 
 		dataMap[taskName] = content
 		// TODO: For tasks with output that won't be used later (i.e., no later
 		//  tasks declare it a "link"), we can drop it from the dataMap and return
-		//  the buffer to the buffer pool.
+		//  the buffer to the buffer pool. Need to mark when buffers can be dropped,
+		//  or rather, which buffers should be dropped per task.
 		// TODO: Some tasks (e.g., JSON tasks) hold on to (potentially large)
 		//   chunks of memory -- we should set these to nil so the GC can reclaim it.
 		//   Need a clear/automatic way to do this (i.e., have them only 'store'
@@ -312,7 +330,7 @@ func (p Pipeline) Execute(ctx context.Context) error {
 	return nil
 }
 
-const truncateOutputAt = 1000 // bytes
+const truncateOutputAt = 100 // bytes
 func logTaskResult(taskName string, task *Task, content []byte) {
 	if task.DisableResultLog {
 		return
@@ -445,6 +463,14 @@ var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return new(bytes.Buffer)
 	},
+}
+
+func popBuffer(bufs *[]*bytes.Buffer) {
+	buf := (*bufs)[len(*bufs)-1]
+	buf.Reset()
+	bufferPool.Put(buf)
+	(*bufs)[len(*bufs)-1] = nil
+	*bufs = (*bufs)[:len(*bufs)-1]
 }
 
 // withBuffer handles executing a function that needs a temporary byte buffer.

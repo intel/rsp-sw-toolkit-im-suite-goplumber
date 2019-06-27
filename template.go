@@ -284,10 +284,8 @@ func (ts *TemplatePipe) Execute(ctx context.Context, w io.Writer, links linkMap)
 		panic("initial template is nil")
 	}
 
-	if ts.data != nil {
-		for k, v := range ts.data {
-			links[k] = v
-		}
+	for k, v := range ts.data {
+		links[k] = v
 	}
 
 	if err := ts.template.Execute(w, links); err != nil {

@@ -39,7 +39,7 @@ func TestPipelineRunner_interval(t *testing.T) {
 		// start the runner & add the pipeline
 		ctx, cancel := context.WithCancel(context.Background())
 		started := time.Now()
-		Repeat(ctx, p, time.Duration(1)*time.Second)
+		go RunPipelineForever(ctx, p, time.Duration(1)*time.Second)
 
 		// wait two seconds, then cancel the context
 		<-time.After(2 * time.Second)

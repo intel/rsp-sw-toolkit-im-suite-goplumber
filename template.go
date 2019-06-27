@@ -45,8 +45,8 @@ func TemplateError(format string, args ...interface{}) (string, error) {
 }
 
 // ToInt attempts to convert the given interface to an integral type.
-func ToInt(v interface{}) (int, error) {
-	switch v := v.(type) {
+func ToInt(i interface{}) (int, error) {
+	switch v := i.(type) {
 	case int:
 		return v, nil
 	case int8:
@@ -93,35 +93,6 @@ func ToInt(v interface{}) (int, error) {
 
 var intType = reflect.TypeOf(int(0))
 var floatType = reflect.TypeOf(float64(0))
-
-// ToNumber converts to a number.
-func ToNumber(x interface{}) (interface{}, error) {
-	switch v := x.(type) {
-	case int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64,
-		float32, float64:
-		return v, nil
-	case string:
-		return strToNumber(v)
-	case []byte:
-		return strToNumber(string(v))
-	default:
-		vt := reflect.ValueOf(v)
-		for vt.IsValid() && (vt.Kind() == reflect.Ptr || vt.Kind() == reflect.Interface) {
-			vt = vt.Elem()
-		}
-		if !vt.IsValid() {
-			return 0, errors.New("underlying value is nil")
-		}
-		if vt.Type().ConvertibleTo(intType) {
-			return vt.Convert(intType).Int(), nil
-		}
-		if vt.Type().ConvertibleTo(floatType) {
-			return vt.Convert(floatType).Float(), nil
-		}
-		return 0, errors.Errorf("can't convert type %T to number", v)
-	}
-}
 
 func strToInt(s string) (int, error) {
 	r, err := strconv.Atoi(s)
@@ -186,10 +157,15 @@ func ToJSON(src []byte) (v interface{}, err error) {
 	return
 }
 
-// Add returns the sum of its values.
-func Add(sum float64, rest ...float64) (float64, error) {
-	for _, val := range rest {
-		sum += val
+// Add returns the sum of integer values.
+func Add(values ...interface{}) (int, error) {
+	sum := int(0)
+	for _, val := range values {
+		v, err := ToInt(val)
+		if err != nil {
+			return 0, err
+		}
+		sum += v
 	}
 	return sum, nil
 }
@@ -204,85 +180,117 @@ func GetOutboundIP() (net.IP, error) {
 }
 
 type TemplateTask struct {
-	Data         map[string]interface{} `json:"initialData,omitempty"`
-	Namespaces   []string               `json:"namespaces"`
-	TemplateName string                 `json:"template"`
-	template     *template.Template
+	Data         map[string]json.RawMessage `json:"initialData,omitempty"`
+	Namespaces   []string                   `json:"namespaces"`
+	TemplateName string                     `json:"template"`
 }
 
-// LoadTemplateNamespace loads a template namespace from a given source.
+type TemplatePipe struct {
+	template *template.Template
+	data     map[string][]byte
+}
+
+// LoadNamespace loads a template namespace from a given source.
 //
 // If the source is a FileSystem and id does not have an extension, .gotmpl is
 // automatically appended to the id.
-func LoadTemplateNamespace(source DataSource, id string) (string, error) {
-	if _, ok := source.(FileSystem); ok && filepath.Ext(id) == "" {
-		id += ".gotmpl"
+func LoadNamespace(source DataSource, namespaces []string) (*template.Template, error) {
+	tmpl, err := baseTmpl.Clone()
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to clone root template namespace")
 	}
+	tmpl = tmpl.Option("missingkey=error")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	body, _, err := source.Get(ctx, id)
-	if ctx.Err() != nil {
-		return "", err
+
+	for _, ns := range namespaces {
+		logrus.Debugf("Loading namespace %s.", ns)
+		if _, ok := source.(FileSystem); ok && filepath.Ext(ns) == "" {
+			ns += ".gotmpl"
+		}
+
+		body, _, err := source.Get(ctx, ns)
+		if ctx.Err() != nil {
+			return nil, err
+		}
+
+		if err != nil {
+			return nil, errors.WithMessagef(err, "failed loading namespace '%s'", ns)
+		}
+		if _, err := tmpl.New(ns).Parse(string(body)); err != nil {
+			return nil, errors.Wrapf(err, "failed parsing namespace '%s'", ns)
+		}
 	}
 
-	return string(body), err
+	return tmpl, err
 }
 
-func NewTemplateTask(conf []byte, root *template.Template, loader DataSource) (*TemplateTask, error) {
-	ts := &TemplateTask{}
-	if err := json.Unmarshal(conf, ts); err != nil {
+// TemplateClient provides TemplatePipes by loading templates from a DataSource.
+type templateClient struct {
+	src DataSource
+}
+
+// NewTemplateClient returns a new Client that returns TemplatePipes.
+func NewTemplateClient(src DataSource) Client {
+	return &templateClient{src: src}
+}
+
+func (tc *templateClient) GetPipe(task *Task) (Pipe, error) {
+	ts := TemplateTask{}
+	if err := json.Unmarshal(task.Raw, &ts); err != nil {
 		return nil, errors.Wrap(err, "failed to unmarshal template task")
 	}
 	if ts.TemplateName == "" {
 		return nil, errors.New("template task is missing template name")
 	}
 
-	tmpl, err := root.Clone()
+	tmpl, err := LoadNamespace(tc.src, ts.Namespaces)
 	if err != nil {
 		return nil, err
 	}
-	ts.template = tmpl.Option("missingkey=error")
-
-	// load other templates into this namespace
-	for _, ns := range ts.Namespaces {
-		logrus.Debugf("Loading namespace %s.", ns)
-		data, err := LoadTemplateNamespace(loader, ns)
-		if err != nil {
-			return nil, errors.Wrapf(err, "failed to load template namespace '%s'", ns)
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		var allTmpls []string
+		for _, tmpl := range tmpl.Templates() {
+			allTmpls = append(allTmpls, tmpl.Name())
 		}
-		if _, err := ts.template.New(ns).Parse(data); err != nil {
-			return nil, errors.Wrapf(err, "unable to parse namespace '%s'", ns)
-		}
+		logrus.WithField("defined templates", allTmpls).
+			Debug("Parsing complete.")
 	}
 
-	// make sure the named template exists in the namespace
-	if ts.template.Lookup(ts.TemplateName) == nil {
+	tp := &TemplatePipe{
+		template: tmpl.Lookup(ts.TemplateName),
+	}
+	if tp.template == nil {
 		return nil, errors.Errorf("no template named '%s' in this namespace",
 			ts.TemplateName)
 	}
-	return ts, nil
+
+	tp.data = map[string][]byte{}
+	for k, v := range ts.Data {
+		tp.data[k] = v
+	}
+	for l := range task.Links {
+		if _, present := tp.data[l]; present {
+			return nil, errors.Errorf("task both links and supplies"+
+				" initial data for '%s'", l)
+		}
+	}
+	return tp, nil
 }
 
-func (ts *TemplateTask) Fill(linkedInput map[string][]byte) error {
+func (ts *TemplatePipe) Execute(ctx context.Context, w io.Writer, links linkMap) error {
 	if ts.template == nil {
 		panic("initial template is nil")
 	}
 
-	if ts.Data == nil {
-		ts.Data = map[string]interface{}{}
+	if ts.data != nil {
+		for k, v := range ts.data {
+			links[k] = v
+		}
 	}
-	// Merge initial data with linked input.
-	// This overwrites 'raw' keys, but maybe it should return an error instead.
-	for k, v := range linkedInput {
-		ts.Data[k] = v
-	}
-	return nil
-}
 
-func (ts *TemplateTask) Execute(ctx context.Context, w io.Writer) error {
-	logrus.Debugf("Executing template '%s'.", ts.TemplateName)
-	if err := ts.template.ExecuteTemplate(w, ts.TemplateName, ts.Data); err != nil {
+	if err := ts.template.Execute(w, links); err != nil {
 		return errors.Wrap(err, "template task failed")
 	}
 	return nil

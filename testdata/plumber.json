@@ -1,0 +1,8 @@
+{
+  "configDir": "/config",
+  "mqttConfigFile": "mqttConf.json",
+  "customTasks": [ ],
+  "pipelineNames": [
+    "mqttPipeline.json"
+  ]
+}

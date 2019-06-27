@@ -1,0 +1,35 @@
+{
+  "name": "loadOnly",
+  "description": "Uses the 'custom' ET Task Type to perform the first steps",
+  "timeoutSeconds": 1,
+  "tasks": {
+    "loadURL": {
+      "type": "get",
+      "raw": { "name": "loadURL" },
+      "errorIfEmpty": true
+    },
+    "storeURL": {
+      "type": "get",
+      "raw": { "name": "storeURL" },
+      "errorIfEmpty": true
+    },
+    "extractAndTransform": {
+      "type": "ET",
+      "links": {
+        "url": { "from": "loadURL" }
+      },
+      "stopOnEmpty": true
+    },
+    "load": {
+      "type": "http",
+      "links": {
+        "body": { "from": "extractAndTransform" },
+        "url": { "from": "storeURL" }
+      },
+      "raw": {
+        "method": "POST",
+        "url": "replace with testserver url"
+      }
+    }
+  }
+}

@@ -24,49 +24,50 @@ import (
 // LoadTask loads data from a DataSource using a key. If the key isn't present,
 // it'll return the Default, which may be nil.
 type LoadTask struct {
-	Key     string `json:"name"`
-	Default json.RawMessage
+	Key     string          `json:"name"`
+	Default json.RawMessage `json:"default"` // default value, if not present
 	source  DataSource
 }
 
 // StoreTask sends data to a Sink.
 type StoreTask struct {
 	Key   string `json:"name"`
-	Value []byte
+	Value json.RawMessage
 	sink  Sink
 }
 
-// NewLoadTaskGenerator returns a TaskGenerator that generates LoadTasks using
-// the given DataSource.
-func NewLoadTaskGenerator(source DataSource) TaskGenerator {
-	return TaskFunc(func(task *Task) (Pipe, error) {
+// NewSourceClient returns a Client to load data from the DataSource.
+func NewSourceClient(source DataSource) Client {
+	return JSONPipe(func(task *Task) (Pipe, error) {
 		return &LoadTask{source: source}, nil
 	})
 }
 
-// NewStoreTaskGenerator returns a TaskGenerator that generates Store tasks using
-// the given data Sink.
-func NewStoreTaskGenerator(sink Sink) TaskGenerator {
-	return TaskFunc(func(task *Task) (Pipe, error) {
+// NewSinkClient returns a Client to store data in a given Sink.
+func NewSinkClient(sink Sink) Client {
+	return JSONPipe(func(task *Task) (Pipe, error) {
 		return &StoreTask{sink: sink}, nil
 	})
 }
 
-func (task *LoadTask) Fill(d map[string][]byte) error {
-	return unmarshalPartial(d, task)
-}
+// Execute by loading data from a source.
+func (task *LoadTask) Execute(ctx context.Context, w io.Writer, d linkMap) error {
+	// create a new load task to unmarshal the input
+	lt := *task
+	if err := unmarshalMap(d, &lt); err != nil {
+		return err
+	}
 
-func (task *LoadTask) Execute(ctx context.Context, w io.Writer) error {
-	if task.Key == "" {
+	if lt.Key == "" {
 		return errors.New("missing key name")
 	}
-	v, ok, err := task.source.Get(ctx, task.Key)
+	v, ok, err := task.source.Get(ctx, lt.Key)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		logrus.Debugf("missing %s; using default %s", task.Key, task.Default)
-		v = task.Default
+		logrus.Debugf("missing %s; using default %s", lt.Key, lt.Default)
+		v = lt.Default
 	}
 	if v != nil {
 		_, err = w.Write(v)
@@ -74,58 +75,25 @@ func (task *LoadTask) Execute(ctx context.Context, w io.Writer) error {
 	return err
 }
 
-func (task *StoreTask) Fill(d map[string][]byte) error {
-	return unmarshalPartial(d, task)
-}
-
-func (task *StoreTask) Execute(ctx context.Context, w io.Writer) error {
-	if task.Key == "" {
+func (task *StoreTask) Execute(ctx context.Context, w io.Writer, d linkMap) error {
+	st := *task
+	if err := unmarshalMap(d, &st); err != nil {
+		return err
+	}
+	if st.Key == "" {
 		return errors.New("missing key name")
 	}
-	return task.sink.Put(ctx, task.Key, task.Value)
+	return task.sink.Put(ctx, st.Key, st.Value)
 }
 
 // HTTPTask executes an HTTP request.
 type HTTPTask struct {
-	client         *http.Client
-	bodyReader     io.Reader
 	MaxRetries     int                 `json:"maxRetries"`
 	Method         string              `json:"method,omitempty"`
 	URL            string              `json:"url,omitempty"`
 	Body           json.RawMessage     `json:"body,omitempty"`
 	Headers        map[string][]string `json:"headers,omitempty"`
 	SkipCertVerify bool                `json:"skipCertVerify"`
-}
-
-func (task *HTTPTask) Fill(linkedInput map[string][]byte) error {
-	logrus.Debug("Filling HTTP task")
-	if err := unmarshalPartial(linkedInput, task); err != nil {
-		return err
-	}
-
-	if task.Method == "" {
-		return errors.New("missing method for HTTP task")
-	}
-	if task.URL == "" {
-		return errors.New("missing URL for HTTP task")
-	}
-	if task.Body != nil {
-		task.bodyReader = bytes.NewReader(task.Body)
-	}
-	if task.MaxRetries < 1 {
-		logrus.Debugf("Forcing HTTPTask to have MaxRetries of at least 1, "+
-			"instead of value %d", task.MaxRetries)
-		task.MaxRetries = 1
-	}
-
-	if task.SkipCertVerify {
-		logrus.Debug("Using insecure HTTP client to skip SSL certificate verification")
-		task.client = getInsecureClient()
-	} else {
-		task.client = http.DefaultClient
-	}
-
-	return nil
 }
 
 var createInsecureTransportOnce = sync.Once{}
@@ -153,15 +121,45 @@ func createInsecureClient() {
 	}}
 }
 
-func (task *HTTPTask) Execute(ctx context.Context, w io.Writer) error {
-	request, err := http.NewRequest(task.Method, task.URL, task.bodyReader)
+func (task *HTTPTask) Execute(ctx context.Context, w io.Writer, d linkMap) error {
+	httpPipe := *task
+	if err := unmarshalMap(d, &httpPipe); err != nil {
+		return err
+	}
+
+	if httpPipe.Method == "" {
+		return errors.New("missing method for HTTP task")
+	}
+	if httpPipe.URL == "" {
+		return errors.New("missing URL for HTTP task")
+	}
+	if httpPipe.MaxRetries < 1 {
+		logrus.Debugf("Forcing HTTPTask to have MaxRetries of at least 1, "+
+			"instead of value %d", httpPipe.MaxRetries)
+		httpPipe.MaxRetries = 1
+	}
+
+	var client *http.Client
+	if httpPipe.SkipCertVerify {
+		logrus.Debug("Using insecure HTTP client to skip SSL certificate verification")
+		client = getInsecureClient()
+	} else {
+		client = http.DefaultClient
+	}
+
+	var bodyReader io.Reader
+	if httpPipe.Body != nil {
+		bodyReader = bytes.NewReader(httpPipe.Body)
+	}
+
+	request, err := http.NewRequest(httpPipe.Method, httpPipe.URL, bodyReader)
 	if err != nil {
 		return errors.Wrap(err, "unable to create http request")
 	}
 
 	// add headers
-	if task.Headers != nil {
-		for headerKey, headers := range task.Headers {
+	if httpPipe.Headers != nil {
+		for headerKey, headers := range httpPipe.Headers {
 			for _, h := range headers {
 				request.Header.Add(headerKey, h)
 			}
@@ -171,14 +169,13 @@ func (task *HTTPTask) Execute(ctx context.Context, w io.Writer) error {
 	request = request.WithContext(ctx)
 
 	logrus.
-		WithField("method", task.Method).
-		WithField("url", task.URL).
-		WithField("body length", len(task.Body)).
-		WithField("num headers", len(task.Headers)).
-		WithField("client", task.client).
+		WithField("method", httpPipe.Method).
+		WithField("url", httpPipe.URL).
+		WithField("bodyLength", len(httpPipe.Body)).
+		WithField("numHeaders", len(httpPipe.Headers)).
 		Debug("Executing HTTP task")
 
-	response, err := task.client.Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return errors.Wrap(err, "http task failed")
 	}
@@ -203,33 +200,29 @@ func (task *HTTPTask) Execute(ctx context.Context, w io.Writer) error {
 type JSONValidationTask struct {
 	Content     []byte `json:"content"`
 	SchemaBytes []byte `json:"schema"`
-	schema      *gojsonschema.Schema
 }
 
-func (jvt *JSONValidationTask) Fill(d map[string][]byte) error {
-	if err := unmarshalPartial(d, jvt); err != nil {
+func (jvt *JSONValidationTask) Execute(ctx context.Context, w io.Writer, d linkMap) error {
+	pipe := *jvt
+	if err := unmarshalMap(d, &pipe); err != nil {
 		return err
 	}
-	if jvt.Content == nil {
+	if pipe.Content == nil {
 		return errors.New("JSON validation task has no content to validate")
 	}
-	if len(jvt.SchemaBytes) == 0 {
+	if len(pipe.SchemaBytes) == 0 {
 		return errors.New("JSON validation task has no schema to validate against")
 	}
 
-	l := gojsonschema.NewBytesLoader(jvt.SchemaBytes)
-	s, err := gojsonschema.NewSchema(l)
+	l := gojsonschema.NewBytesLoader(pipe.SchemaBytes)
+	schema, err := gojsonschema.NewSchema(l)
 	if err != nil {
 		return errors.Wrapf(err, "unable to load schema")
 	}
-	jvt.schema = s
-	return nil
-}
 
-func (jvt *JSONValidationTask) Execute(ctx context.Context, w io.Writer) error {
-	dataLoader := gojsonschema.NewBytesLoader(jvt.Content)
+	dataLoader := gojsonschema.NewBytesLoader(pipe.Content)
 
-	result, err := jvt.schema.Validate(dataLoader)
+	result, err := schema.Validate(dataLoader)
 	if err != nil {
 		return errors.Wrapf(err, "unable to validate against JSON schema")
 	}
@@ -247,102 +240,112 @@ func (jvt *JSONValidationTask) Execute(ctx context.Context, w io.Writer) error {
 		strings.Join(errStrs, "\n"))
 }
 
-type MQTTTask struct {
+type MQTTClient struct {
 	client         mqtt.Client
 	ClientID       string
-	Topics         []string
-	Endpoint       string
-	Message        []byte
 	Username       string
 	Password       string
+	Endpoint       string
 	TimeoutSecs    int
-	Encrypt        bool
 	SkipCertVerify bool
 }
 
-func NewMQTTTask() *MQTTTask {
-	return &MQTTTask{
-		Encrypt:     true,
-		TimeoutSecs: 30,
-	}
-}
+func (mqttClient *MQTTClient) UnmarshalJSON(data []byte) error {
+	logrus.Debug("Unmarshaling client")
 
-func (mqttd *MQTTTask) Fill(linkedInput map[string][]byte) error {
-	if err := unmarshalPartial(linkedInput, mqttd); err != nil {
+	type mc_ MQTTClient
+	var mc mc_
+	if err := json.Unmarshal(data, &mc); err != nil {
 		return err
 	}
+	*mqttClient = (MQTTClient)(mc)
 
-	if mqttd.Endpoint == "" {
+	if mqttClient.Endpoint == "" {
 		return errors.New("missing endpoint for MQTT task")
 	}
-	endpoint := mqttd.Endpoint
-	if !strings.Contains(mqttd.Endpoint, "://") {
-		if mqttd.Encrypt {
-			endpoint = "tls://" + endpoint
-		} else {
-			endpoint = "tcp://" + endpoint
-		}
+	endpoint := mqttClient.Endpoint
+	if !strings.Contains(mqttClient.Endpoint, "://") {
+		endpoint = "tcp://" + endpoint
 	}
+
 	purl, err := url.Parse(endpoint)
 	if err != nil {
 		return errors.Wrap(err, "invalid URL")
 	}
 	endpoint = purl.String()
 
-	if mqttd.TimeoutSecs < 1 {
-		logrus.Debugf("Setting time out to 30s")
-		mqttd.TimeoutSecs = 30
+	if mqttClient.TimeoutSecs == 0 {
+		logrus.Debugf("Setting timeout to 30s")
+		mqttClient.TimeoutSecs = 30
 	}
 
-	// todo: use resource connection pool
 	options := mqtt.NewClientOptions().
 		AddBroker(endpoint).
-		SetOrderMatters(false).
-		SetMaxReconnectInterval(time.Duration(mqttd.TimeoutSecs) * time.Second).
 		SetOnConnectHandler(func(client mqtt.Client) {
 			logrus.Infof("MQTT connected on %s", endpoint)
 		}).
 		SetConnectionLostHandler(func(_ mqtt.Client, e error) {
-			logrus.Errorf("MQTT disconnected from %s: %+v", endpoint, e)
+			logrus.Warningf("MQTT disconnected from %s: %+v", endpoint, e)
 		}).
 		SetTLSConfig(&tls.Config{
-			InsecureSkipVerify: mqttd.SkipCertVerify,
+			InsecureSkipVerify: mqttClient.SkipCertVerify,
 		})
 
-	if mqttd.Password != "" {
-		if mqttd.Username == "" {
+	if mqttClient.Password != "" {
+		if mqttClient.Username == "" {
 			return errors.New("mqtt has password, but no username")
 		}
-		options.SetUsername(mqttd.Username)
-		options.SetPassword(mqttd.Password)
+		options.SetUsername(mqttClient.Username)
+		options.SetPassword(mqttClient.Password)
+	} else if mqttClient.Username != "" {
+		return errors.New("mqtt has username, but no password")
 	}
 
-	if mqttd.ClientID != "" {
-		options.SetClientID(mqttd.ClientID)
+	if mqttClient.ClientID != "" {
+		options.SetClientID(mqttClient.ClientID)
 	}
 
-	mqttd.client = mqtt.NewClient(options)
-
+	mqttClient.client = mqtt.NewClient(options)
 	return nil
 }
 
-func (mqttd *MQTTTask) Execute(ctx context.Context, w io.Writer) error {
-	if len(mqttd.Topics) == 0 {
+func (mqttClient *MQTTClient) ensureConnected() error {
+	client := mqttClient.client
+	if client.IsConnected() {
 		return nil
 	}
 
+	logrus.Debugf("Connecting MQTT on %s", mqttClient.Endpoint)
+	token := client.Connect()
+	timedOut := !token.WaitTimeout(time.Duration(mqttClient.TimeoutSecs) * time.Second)
+	if token.Error() != nil {
+		return errors.Wrap(token.Error(), "error trying to connect to mqtt")
+	}
+	if timedOut {
+		return errors.New("timed out connecting mqtt")
+	}
+	if !client.IsConnected() {
+		return errors.New("client not connected")
+	}
+	ct := token.(*mqtt.ConnectToken)
+	logrus.Infof("Return code: %v; has session: %v",
+		ct.ReturnCode(), ct.SessionPresent())
+	return nil
+}
+
+type MQTTTask struct {
+	Message []json.RawMessage `json:"message"`
+}
+
+func (mqttClient *MQTTClient) Put(ctx context.Context, topic string, msg []byte) error {
 	remaining := getRemaining(ctx)
 	if remaining.Seconds() <= 0 {
 		return errors.New("deadline has expired")
 	}
 
-	client := mqttd.client
-	if !client.IsConnected() {
-		or := mqttd.client.OptionsReader()
-		logrus.Debugf("Connecting to MQTT at: %+v", or.Servers())
-		if token := client.Connect(); token.WaitTimeout(remaining) && token.Error() != nil {
-			return errors.Wrap(token.Error(), "check host and security settings")
-		}
+	client := mqttClient.client
+	if err := mqttClient.ensureConnected(); err != nil {
+		return err
 	}
 
 	// update the time remaining
@@ -351,53 +354,19 @@ func (mqttd *MQTTTask) Execute(ctx context.Context, w io.Writer) error {
 		return errors.New("deadline has expired")
 	}
 
-	msg := mqttd.Message
-	logrus.Debugf("Publishing %d bytes to %d topic(s) %s",
-		len(msg), len(mqttd.Topics), mqttd.Topics)
+	logrus.Debugf("Publishing %d bytes to topic '%s'", len(msg), topic)
 
-	errChan := make(chan error, len(mqttd.Topics))
-	for i := range mqttd.Topics {
-		go func(topic string) {
-			token := client.Publish(topic, 0, false, msg)
-			if !token.WaitTimeout(remaining) {
-				errChan <- errors.Errorf("timed out publishing to %s", topic)
-			} else {
-				err := token.Error()
-				if err != nil {
-					errChan <- errors.WithStack(err)
-				} else {
-					errChan <- nil
-				}
-			}
-		}(mqttd.Topics[i])
+	token := client.Publish(topic, 0, false, msg)
+	if !token.WaitTimeout(remaining) {
+		return errors.Errorf("timed out publishing to %s", topic)
 	}
-
-	var errs []string
-	count := 0
-	for err := range errChan {
-		count++
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("%+v", err))
-		}
-		if count == len(mqttd.Topics) {
-			close(errChan)
-		}
-	}
-
-	if len(errs) != 0 {
-		return errors.Errorf("failed to publish to some topics: %s",
-			strings.Join(errs, "\n-----\n"))
-	}
-
-	return nil
+	token.Wait()
+	return token.Error()
 }
 
-// unmarshalPartial unmarshals a partially unmarshaled JSON object into a struct.
-//
-// The purpose of this function is letting a struct be "partially" filled with
-// some initial data, then later, new data is presented as JSON and merged with
-// the original struct. It's not the prettiest implementation.
-func unmarshalPartial(partial map[string][]byte, s interface{}) error {
+// unmarshalMap unmarshals a map of bytes, presumably JSON values, into a struct,
+// without first remarshaling the entire thing to bytes.
+func unmarshalMap(partial map[string][]byte, s interface{}) error {
 	v := reflect.ValueOf(s)
 	if !v.IsValid() || v.Kind() != reflect.Ptr {
 		return errors.New("destination must be a non-nil pointer to a struct")
@@ -470,7 +439,14 @@ func unmarshalPartial(partial map[string][]byte, s interface{}) error {
 		x := reflect.New(tField.Type).Interface()
 		// logrus.Debugf("unmarshaling %s", data)
 		if err := json.Unmarshal(data, x); err != nil {
-			return errors.Wrapf(err, "failed to unmarshal field '%s'", tField.Name)
+			if field.Kind() == reflect.String && len(data) > 0 &&
+				(data[0] != byte('"') || data[len(data)-1] != byte('"')) {
+				return errors.Wrapf(err, "failed to unmarshal field '%s'; "+
+					"note: this field is a string type -- does it need \"quotes\"? ",
+					tField.Name)
+			}
+			return errors.Wrapf(err, "failed to unmarshal field '%s' of "+
+				"kind %v", field.Kind(), tField.Name)
 		}
 
 		// assign the result
@@ -495,7 +471,7 @@ func unmarshalPartial(partial map[string][]byte, s interface{}) error {
 func getRemaining(ctx context.Context) time.Duration {
 	deadline, hasDeadline := ctx.Deadline()
 	if !hasDeadline {
-		deadline = time.Now().Add(time.Second * time.Duration(defaultTimeout))
+		deadline = time.Now().Add(time.Second * time.Duration(defaultTimeoutSecs))
 	}
 
 	remaining := time.Until(deadline)

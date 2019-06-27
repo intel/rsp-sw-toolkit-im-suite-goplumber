@@ -63,6 +63,9 @@ func (fs FileSystem) getPath(name string) (string, error) {
 	if err != nil {
 		return "", errors.Wrapf(err, "unable to get path for '%s'", name)
 	}
+	if len(relpath) == 0 {
+		return "", errors.Errorf("nothing to get - path was empty")
+	}
 	if len(relpath) < 2 || relpath[:2] == ".." {
 		return "", errors.Errorf(
 			"won't get '%s': paths must not move up directories", name)

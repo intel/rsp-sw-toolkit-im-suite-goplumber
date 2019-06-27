@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-func makeDependencyPipe(d map[string][]string) *Pipeline {
-	tm := map[string]*Task{}
+func makeDependencyPipe(d map[string][]string) *PipelineConfig {
+	tm := taskMap{}
 	for taskName, dependencies := range d {
 		if len(dependencies) == 0 {
 			tm[taskName] = &Task{}
@@ -19,7 +19,14 @@ func makeDependencyPipe(d map[string][]string) *Pipeline {
 		}
 		tm[taskName] = &Task{Links: links}
 	}
-	return &Pipeline{Tasks: tm}
+	return &PipelineConfig{Tasks: tm}
+}
+
+func getNames(t []*Task) (s []string) {
+	for i := 0; i < len(t); i++ {
+		s = append(s, t[i].name)
+	}
+	return
 }
 
 func TestPipeline_sortTasks_oneDep(t *testing.T) {
@@ -28,10 +35,8 @@ func TestPipeline_sortTasks_oneDep(t *testing.T) {
 		"a": {"b"},
 		"b": {},
 	})
-	w.ShouldSucceed(checkTasks(p))
-	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
-	w.Log(taskOrder)
-	w.ShouldBeEqual(taskOrder, []string{"b", "a"})
+	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]*Task)
+	w.ShouldContain(getNames(taskOrder), []string{"b", "a"})
 }
 
 func TestPipeline_sortTasks_independentTasks(t *testing.T) {
@@ -41,10 +46,8 @@ func TestPipeline_sortTasks_independentTasks(t *testing.T) {
 		"b": {},
 		"c": {},
 	})
-	w.ShouldSucceed(checkTasks(p))
-	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
-	w.Log(taskOrder)
-	w.ShouldContain(taskOrder, p.Tasks)
+	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]*Task)
+	w.ShouldContain(getNames(taskOrder), []string{"a", "b", "c"})
 }
 
 func TestPipeline_sortTasks_nonChain(t *testing.T) {
@@ -54,11 +57,10 @@ func TestPipeline_sortTasks_nonChain(t *testing.T) {
 		"c": {"b"},
 		"b": {},
 	})
-	w.ShouldSucceed(checkTasks(p))
-	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
+	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]*Task)
 	w.Log(taskOrder)
-	w.ShouldBeEqual(taskOrder[0], "b")
-	w.ShouldContain(taskOrder[1:], []string{"a", "c"})
+	w.ShouldBeEqual(taskOrder[0].name, "b")
+	w.ShouldContain(getNames(taskOrder[1:]), []string{"a", "c"})
 }
 
 func TestPipeline_sortTasks_chain(t *testing.T) {
@@ -68,10 +70,10 @@ func TestPipeline_sortTasks_chain(t *testing.T) {
 		"c": {"a"},
 		"b": {},
 	})
-	w.ShouldSucceed(checkTasks(p))
-	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
+	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]*Task)
 	w.Log(taskOrder)
-	w.ShouldBeEqual(taskOrder, []string{"b", "a", "c"})
+	order := []string{"b", "a", "c"}
+	w.ShouldBeEqual(getNames(taskOrder), order)
 }
 
 func TestPipeline_sortTasks_longChain(t *testing.T) {
@@ -83,11 +85,10 @@ func TestPipeline_sortTasks_longChain(t *testing.T) {
 		"d": {"e"},
 		"e": {},
 	})
-	w.ShouldSucceed(checkTasks(p))
-	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
+	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]*Task)
 	w.Log(taskOrder)
-	w.ShouldContain(taskOrder[0:2], []string{"e", "b"})
-	w.ShouldBeEqual(taskOrder[2:], []string{"d", "a", "c"})
+	w.ShouldContain(getNames(taskOrder[0:2]), []string{"e", "b"})
+	w.ShouldBeEqual(getNames(taskOrder[2:]), []string{"d", "a", "c"})
 }
 
 func TestPipeline_sortTasks_diamond(t *testing.T) {
@@ -99,12 +100,10 @@ func TestPipeline_sortTasks_diamond(t *testing.T) {
 		"d": {},
 		"e": {"a"},
 	})
-	w.ShouldSucceed(checkTasks(p))
-	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]string)
-	w.Log(taskOrder)
-	w.ShouldBeEqual(taskOrder[0], "d")
-	w.ShouldContain(taskOrder[1:3], []string{"b", "c"})
-	w.ShouldBeEqual(taskOrder[3:5], []string{"a", "e"})
+	taskOrder := w.ShouldHaveResult(sortTasks(p.Tasks)).([]*Task)
+	w.ShouldBeEqual(taskOrder[0].name, "d")
+	w.ShouldContain(getNames(taskOrder[1:3]), []string{"b", "c"})
+	w.ShouldBeEqual(getNames(taskOrder[3:5]), []string{"a", "e"})
 }
 
 func TestPipeline_sortTasks_cycles(t *testing.T) {
@@ -114,7 +113,6 @@ func TestPipeline_sortTasks_cycles(t *testing.T) {
 		"b": {"c"},
 		"c": {"a"},
 	})
-	w.ShouldSucceed(checkTasks(p))
 	w.Log(w.ShouldHaveError(sortTasks(p.Tasks)))
 
 	p = makeDependencyPipe(map[string][]string{
@@ -122,7 +120,6 @@ func TestPipeline_sortTasks_cycles(t *testing.T) {
 		"c": {"a"},
 		"b": {},
 	})
-	w.ShouldSucceed(checkTasks(p))
 	w.Log(w.ShouldHaveError(sortTasks(p.Tasks)))
 }
 
@@ -137,7 +134,5 @@ func TestPipeline_sortTasks_longCycle(t *testing.T) {
 		"f": {"a", "b", "c"},
 		"g": {"d", "e", "f"},
 	})
-	w.ShouldSucceed(checkTasks(p))
 	w.Log(w.ShouldHaveError(sortTasks(p.Tasks)))
 }
-

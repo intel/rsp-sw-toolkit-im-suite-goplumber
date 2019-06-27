@@ -1,6 +1,7 @@
 package goplumber
 
 import (
+	"encoding/json"
 	"github.com/sirupsen/logrus"
 	"github.impcloud.net/RSP-Inventory-Suite/expect"
 	"testing"
@@ -58,7 +59,7 @@ func TestUnmarshalPartial(t *testing.T) {
 		"struct": []byte(`{"s":"struct"}`),
 		"tag3":   []byte(`{"s":"t3"}`),
 	}
-	w.ShouldSucceed(unmarshalPartial(partial, &starter))
+	w.ShouldSucceed(unmarshalMap(partial, &starter))
 
 	// unmentioned values should be unaffected
 	w.ShouldBeEqual(starter.A, "A")
@@ -83,4 +84,36 @@ func TestUnmarshalPartial(t *testing.T) {
 	w.ShouldBeEqual(starter.c, 0.0)
 	w.ShouldBeEqual(starter.d, Struct{})
 	w.ShouldBeEqual(starter.F, Struct{})
+}
+
+func TestMQTTClient_Put(t *testing.T) {
+	w := expect.WrapT(t).StopOnMismatch()
+
+	/*
+	options := mqtt.NewClientOptions().
+		AddBroker("tls://192.168.99.100:51883").
+		SetOrderMatters(false).
+		SetMaxReconnectInterval(10*time.Second).
+		SetOnConnectHandler(func(client mqtt.Client) {
+			client.Subscribe("hello", 0, func(client mqtt.Client, message mqtt.Message) {
+				w.Log(message)
+			})
+			w.Log("MQTT connected")
+		}).
+		SetConnectionLostHandler(func(_ mqtt.Client, e error) {
+			w.Log("MQTT disconnected")
+		})
+	client := mqtt.NewClient(options)
+	if t := client.Connect(); t.Wait() && t.Error() != nil {
+		w.Fatal(t.Error())
+	}
+	 */
+
+	input := []byte(`{
+"endpoint": "tcp://192.168.99.100:51883",
+"timeoutSecs": 5
+}`)
+	c := &MQTTClient{}
+	w.ShouldSucceed(json.Unmarshal(input, c))
+	w.ShouldSucceed(SendTo(c, "hello", "world"))
 }

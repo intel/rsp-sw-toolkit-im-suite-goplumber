@@ -4,161 +4,91 @@ import (
 	"context"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
-	"sync"
 	"time"
 )
 
-type runningPipeline struct {
-	pipeline Pipeline
-	cancel   context.CancelFunc
+func RunNow(ctx context.Context, p *Pipeline) {
+	runNow(ctx, p)
 }
 
-type PipelineRunner struct {
-	pipeLock  sync.Mutex
-	pipelines map[string]runningPipeline
-}
-
-func NewPipelineRunner() PipelineRunner {
-	return PipelineRunner{pipelines: map[string]runningPipeline{}}
-}
-
-func (pr *PipelineRunner) withPipeLock(f func()) {
-	pr.pipeLock.Lock()
-	defer pr.pipeLock.Unlock()
-	f()
-}
-
-func (pr *PipelineRunner) AddPipeline(ctx context.Context, p Pipeline) {
-	pr.withPipeLock(func() {
-		if ctx.Err() != nil {
-			logrus.WithField("pipeline", p.Name).
-				Debug("Skipping AddPipeline because context was canceled")
-			return
-		}
-
-		if rp, ok := pr.pipelines[p.Name]; ok {
-			rp.cancel()
-			delete(pr.pipelines, p.Name)
-		}
-
-		rp := runningPipeline{pipeline: p}
-
-		// Look at the pipeline's trigger(s):
-		// If it's time-based, schedule it to run.
-		if p.Trigger.Interval.Seconds != 0 {
-			pCtx, pCancel := context.WithCancel(ctx)
-			rp.cancel = pCancel
-			go runPipelineForever(pCtx, p, logPipelineResult)
-		}
-		// todo If it's HTTP-based, set up a webhook.
-		// todo If it's MQTT- or 0MQ-based, set up a Subscriber.
-
-		pr.pipelines[p.Name] = rp
-	})
-}
-
-func (pr *PipelineRunner) RunPipeline(ctx context.Context, name string) (err error) {
-	pr.withPipeLock(func() {
-		rp, ok := pr.pipelines[name]
-		if !ok {
-			err = errors.Errorf("no pipeline named %s", name)
-			return
-		}
-
-		go func() {
-			result := new(PipelineResult)
-			runNow(ctx, rp.pipeline, result)
-			logPipelineResult(result)
-		}()
-	})
-	return
-}
-
-type PipelineResult struct {
-	Pipeline *Pipeline
-	Status   PipeStatus
-}
-
-type PipelineFinished func(result *PipelineResult)
-
-func logPipelineResult(r *PipelineResult) {
-	if r.Status.Err != nil {
-		logrus.Errorf("Pipeline failed: %+v", r.Status.Err)
-	} else {
-		logrus.Debugf("Pipeline result: %+v", r.Status)
-	}
-}
-
-// runPipelineForever repeatedly schedules the pipeline's execution until the
-// context is canceled. Each time the pipeline finishes, the callback, if provided,
-// is called synchronously.
-func runPipelineForever(ctx context.Context, p Pipeline, callback PipelineFinished) {
+// RunPipelineForever repeatedly schedules the Pipeline's execution until the
+// context is canceled.
+//
+// The Pipeline will be executed once immediately. The given duration is waited
+// after an execution completed; it is _NOT_ the amount of time between starts,
+// but instead the time from one end to the next start.
+//
+// If the duration is zero or negative, the Pipeline will execute as often as
+// possible.
+func RunPipelineForever(ctx context.Context, p *Pipeline, d time.Duration) {
 	if ctx.Err() != nil {
 		return
 	}
 
-	// run once right away
-	r := new(PipelineResult)
-	runNow(ctx, p, r)
-	if callback != nil {
-		callback(r)
+	var tick <-chan time.Time = nil
+	if d > 0 {
+		ticker := time.NewTicker(d)
+		defer ticker.Stop()
+		tick = ticker.C
 	}
 
 	for {
+		r := runNow(ctx, p)
+		r.logResult(p.pipelineConfig.Name)
 		select {
+		case <-tick:
 		case <-ctx.Done():
 			return
-		default:
-		}
-
-		r := schedule(ctx, p)
-		if callback != nil {
-			callback(r)
 		}
 	}
 }
 
-// schedule waits until the pipeline should start, runs it, and returns the result;
-// if the context is canceled before the pipeline is started, it returns.
-func schedule(ctx context.Context, pipeline Pipeline) *PipelineResult {
-	result := PipelineResult{Pipeline: &pipeline}
-	waitDuration := time.Duration(pipeline.Trigger.Interval.Seconds) * time.Second
+// setResult recovers from pipeline panics, yielding a consistent result.
+func setResult(result *Status) {
+	panicErr := recover()
 
-	select {
-	case <-time.After(waitDuration):
-		runNow(ctx, pipeline, &result)
-	case <-ctx.Done():
-		if err := ctx.Err(); err != nil {
-			result.Status.Err = err
-		}
-		result.Status.Err = errors.New("pipeline canceled before execution")
-	}
-
-	return &result
-}
-
-func runNow(ctx context.Context, pipeline Pipeline, result *PipelineResult) {
-	defer func() {
-		panicErr := recover()
-		if panicErr != nil {
-			asErr, isErr := panicErr.(error)
-			if isErr {
-				result.Status.Err = asErr
-			} else {
-				logrus.Error(panicErr)
-				result.Status.Err = errors.Errorf("pipeline panicked; see logs")
-			}
-		}
-
-		result.Status.CompletedAt = time.Now().UTC()
-		if result.Status.Err != nil {
-			result.Status.State = Failed
+	if panicErr == nil {
+		err, isErr := panicErr.(error)
+		if isErr {
+			err = errors.Wrap(err, "pipeline panicked")
 		} else {
-			result.Status.State = Success
+			err = errors.New("pipeline panicked")
 		}
-	}()
+	}
 
-	result.Status.StartedAt = time.Now().UTC()
-	result.Status.Err = pipeline.Execute(ctx)
+	result.CompletedAt = time.Now().UTC()
+	if result.Err != nil {
+		result.State = Failed
+	} else {
+		result.State = Success
+	}
+}
+
+// runNow executes a pipeline and records the result, handling panics if necessary.
+func runNow(ctx context.Context, pipeline *Pipeline) (result Status) {
+	defer setResult(&result)
+
+	// nil Timeout or Timeout of zero is set to default
+	// negative Timeout implies Pipeline should not auto-cancel
+	timeout := time.Duration(defaultTimeoutSecs) * time.Second
+	pTimeout := pipeline.pipelineConfig.TimeoutSecs
+	if pTimeout != nil && *pTimeout > 0 {
+		timeout = time.Duration(*pTimeout) * time.Second
+	}
+
+	var cancelFunc context.CancelFunc
+	if timeout > 0 {
+		ctx, cancelFunc = context.WithTimeout(ctx, timeout)
+		logrus.Debugf("Starting pipeline %s with timeout %d seconds.",
+			pipeline.pipelineConfig.Name, int(timeout.Seconds()))
+	} else {
+		ctx, cancelFunc = context.WithCancel(ctx)
+		logrus.Debugf("Starting pipeline %s without a timeout; it must "+
+			"either finish on its own or be canceled manually.",
+			pipeline.pipelineConfig.Name)
+	}
+	defer cancelFunc()
+
+	result = pipeline.Execute(ctx)
 	return
 }

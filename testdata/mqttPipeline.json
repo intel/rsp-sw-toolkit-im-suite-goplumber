@@ -1,0 +1,17 @@
+{
+  "name": "mqttTest",
+  "trigger": {
+    "interval": {
+      "minutes": 1
+    }
+  },
+  "tasks": {
+    "doMqtt": {
+      "type": "mqtt",
+      "raw": {
+        "name": "hello",
+        "value": "world"
+      }
+    }
+  }
+}

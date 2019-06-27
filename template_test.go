@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"testing"
-	"text/template"
-
 	"github.impcloud.net/RSP-Inventory-Suite/expect"
+	"testing"
 )
 
 type SingleTemplateTest struct {
@@ -17,26 +15,27 @@ type SingleTemplateTest struct {
 }
 
 var tmplLoader = NewFSLoader("testdata")
+var tmplClient = NewTemplateClient(memoryStore).(*templateClient)
 
 func (tt SingleTemplateTest) test(t *testing.T) {
 	w := expect.WrapT(t).StopOnMismatch()
 
-	tmpl := w.ShouldHaveResult(baseTmpl.Clone()).(*template.Template)
 	name := "test-template"
-	w.ShouldHaveResult(tmpl.New(name).Parse(tt.Tmpl))
+	memoryStore.kvStore[name] = []byte(tt.Tmpl)
 
 	raw := w.ShouldHaveResult(json.Marshal(struct {
 		Template    string
 		InitialData map[string]json.RawMessage
-	}{Template: name, InitialData: tt.Data})).([]byte)
+		Namespaces  []string
+	}{Template: name, InitialData: tt.Data, Namespaces: []string{name}})).([]byte)
 
-	transform := w.ShouldHaveResult(NewTemplateTask(raw, tmpl, tmplLoader)).(*TemplateTask)
-	w.ShouldSucceed(transform.Fill(tt.StageInput))
-	transform.TemplateName = name
+	task := &Task{Raw: raw}
+	transform := w.ShouldHaveResult(tmplClient.GetPipe(task)).(*TemplatePipe)
 
-	w.Logf("%s", w.ShouldHaveResult(json.Marshal(transform)).([]byte))
+	w.ShouldBeEqual(transform.template.Name(), name)
+
 	buff := &bytes.Buffer{}
-	w.ShouldSucceed(transform.Execute(context.Background(), buff))
+	w.ShouldSucceed(transform.Execute(context.Background(), buff, tt.StageInput))
 	r := buff.String()
 	w.Log(r)
 	w.ShouldBeEqual(r, tt.Expected)
@@ -48,10 +47,10 @@ func TestTemplateTask_json(t *testing.T) {
 {{- $s1 := .stage1 | json -}}
 {{printf "hello, %s!" $s1.hello}}
 {{.stage2 | printf "%s.00"}} + {{.addVal | int}} = 
-{{- .stage2 | json | add $.addVal | printf " %.02f" -}}
+{{- .stage2 | add $.addVal | printf " %d" -}}
 `,
 		Data:     map[string]json.RawMessage{"addVal": []byte(`36`)},
-		Expected: "hello, world!\n1234.00 + 36 = 1270.00",
+		Expected: "hello, world!\n1234.00 + 36 = 1270",
 		StageInput: map[string][]byte{
 			"stage1": []byte(`{"hello": "world"}`),
 			"stage2": []byte(`1234`),
@@ -60,11 +59,11 @@ func TestTemplateTask_json(t *testing.T) {
 	tt.test(t)
 
 	tt.Data = map[string]json.RawMessage{"addVal": []byte(`-10`)}
-	tt.Expected = "hello, world!\n1234.00 + -10 = 1224.00"
+	tt.Expected = "hello, world!\n1234.00 + -10 = 1224"
 	tt.test(t)
 
 	tt.StageInput["stage1"] = []byte(`{"hello": "there"}`)
-	tt.Expected = "hello, there!\n1234.00 + -10 = 1224.00"
+	tt.Expected = "hello, there!\n1234.00 + -10 = 1224"
 	tt.test(t)
 }
 

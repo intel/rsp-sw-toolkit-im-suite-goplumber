@@ -18,26 +18,27 @@ import (
 // order will do; however, if we intend to add parallel task execution, we're
 // better off if we can spread dependent tasks out as far as possible. To do so,
 // we can use something like Coffman-Graham, but right now it's an over-optimization.
-func sortTasks(tm taskMap) ([]string, error) {
-	taskOrder := make([]string, len(tm))
-
+func sortTasks(tm taskMap) ([]*Task, error) {
+	taskOrder := make([]*Task, len(tm))
 	taskFinishTime := make(map[*Task]int, len(tm))
 
 	// determine the finish time for each task
 	taskIdx := 0
 	for taskName, task := range tm {
-		taskOrder[taskIdx] = taskName
+		task.name = taskName
+		taskOrder[taskIdx] = task
 		taskIdx++
 		finishTime, dag := getFinishTime(tm, taskFinishTime, task)
 		if !dag {
-			return taskOrder, errors.Errorf("task '%s' is part of a cycle", taskName)
+			return taskOrder,
+				errors.Errorf("task '%s' is part of a cycle", taskName)
 		}
 		taskFinishTime[task] = finishTime
 	}
 
 	// sort the task order list so that tasks that finish earlier come first
 	sort.Slice(taskOrder, func(t1, t2 int) bool {
-		return taskFinishTime[tm[taskOrder[t1]]] < taskFinishTime[tm[taskOrder[t2]]]
+		return taskFinishTime[taskOrder[t1]] < taskFinishTime[taskOrder[t2]]
 	})
 	return taskOrder, nil
 }
@@ -82,5 +83,5 @@ func getFinishTime(tasks taskMap, tFinishTime map[*Task]int, t *Task) (int, bool
 	}
 
 	tFinishTime[t] = maxChild + 1
-	return maxChild+1, true
+	return maxChild + 1, true
 }

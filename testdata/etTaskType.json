@@ -1,0 +1,29 @@
+{
+  "name": "ET",
+  "description": "Defines a new type that downloads a file and extracts the result",
+  "defaultOutput": "transform",
+  "tasks": {
+    "url": { "type": "input" },
+    "blah": { "type": "input", "raw": { "default": 10 } },
+    "extract": {
+      "type": "http",
+      "raw": {
+        "method": "GET"
+      },
+      "links": {
+        "url": { "from": "url" }
+      }
+    },
+    "transform": {
+      "type": "template",
+      "raw": {
+        "namespaces": [ "ETL" ],
+        "template": "transform"
+      },
+      "links": {
+        "time": { "from": "extract" },
+        "num": { "from": "blah" }
+      }
+    }
+  }
+}

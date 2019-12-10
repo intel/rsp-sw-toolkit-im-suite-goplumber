@@ -28,7 +28,7 @@ func main() {
 		*tmplName = needNS[0]
 	}
 
-	fsLoader := goplumber.NewFSLoader(*tmplDir)
+	fsLoader := goplumber.NewFileSystem(*tmplDir)
 
 	ns, err := goplumber.LoadNamespace(fsLoader, needNS)
 	if err != nil {

@@ -2,6 +2,7 @@ package goplumber
 
 import (
 	"context"
+	"errors"
 	"github.impcloud.net/RSP-Inventory-Suite/expect"
 	"io/ioutil"
 	"net/http"
@@ -92,4 +93,35 @@ func TestPipelineRunner_runMultiple(t *testing.T) {
 	w.ShouldHaveLength(destReqs, 2)
 	w.ShouldHaveLength(destReqs["/load"], 100)
 	w.ShouldHaveLength(destReqs["/store"], 100)
+}
+
+func TestSetResult(t *testing.T) {
+	w := expect.WrapT(t).StopOnMismatch()
+
+	panics := func() (r Status) {
+		defer setResult(&r)
+		panic(errors.New("function panic"))
+		return
+	}
+
+	r := panics()
+	w.ShouldNotBeNil(r)
+	w.ShouldBeEqual(r.State, Failed)
+	w.As("completion time recorded").ShouldBeFalse(r.CompletedAt.After(time.Now().UTC()))
+	w.ShouldNotBeNil(r.Err)
+	w.ShouldContainStr(r.Err.Error(), "function panic")
+	w.ShouldContainStr(r.Err.Error(), "pipeline panicked")
+	w.Log(r)
+
+	noPanics := func() (r Status) {
+		defer setResult(&r)
+		return
+	}
+
+	r = noPanics()
+	w.ShouldNotBeNil(r)
+	w.ShouldBeEqual(r.State, Success)
+	w.As("completion time recorded").ShouldBeFalse(r.CompletedAt.After(time.Now().UTC()))
+	w.ShouldBeNil(r.Err)
+	w.Log(r)
 }

@@ -36,7 +36,7 @@ func (plumber Plumber) SetTemplateSource(taskType string, source DataSource) {
 	plumber.Clients[taskType] = NewTemplateClient(source)
 }
 
-// Returns a new Plumber with the default task types.
+// NewPlumber returns a new Plumber with the default task types.
 //
 // You can modify the Clients map to change how tasks are constructed and which
 // tasks are allowed.

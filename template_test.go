@@ -14,7 +14,6 @@ type SingleTemplateTest struct {
 	StageInput     map[string][]byte
 }
 
-var tmplLoader = NewFSLoader("testdata")
 var tmplClient = NewTemplateClient(memoryStore).(*templateClient)
 
 func (tt SingleTemplateTest) test(t *testing.T) {

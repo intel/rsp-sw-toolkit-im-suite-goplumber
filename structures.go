@@ -94,12 +94,18 @@ type Status struct {
 }
 
 func (s *Status) logResult(pipelineName string) {
-	logrus.WithFields(logrus.Fields{
+	msg := logrus.WithFields(logrus.Fields{
 		"pipeline": pipelineName,
 		"status":   s.State,
 		"duration": s.Duration(),
 		"error":    s.Err,
-	}).Debug("Pipeline complete.")
+	})
+
+	if s.State == Failed {
+		msg.Error("Pipeline failed.")
+	} else {
+		msg.Info("Pipeline completed successfully.")
+	}
 }
 
 func (s *Status) start() {
@@ -115,14 +121,14 @@ func (s *Status) start() {
 func (s *Status) complete(err error) {
 	if err != nil {
 		s.State = Failed
-		s.Err = errors.WithMessagef(err, "failed after #%d attempts", s.Attempts)
+		s.Err = errors.WithMessagef(err, "Failed after %d attempt(s)", s.Attempts)
 	} else {
 		s.State = Success
 	}
 	s.CompletedAt = time.Now().UTC()
 }
 
-// ExecutionTime returns the Duration of time between CompletedAt and StartedAt.
+// Duration returns the Duration of time between CompletedAt and StartedAt.
 //
 // If CompletedAt.IsZero() is true (likely implying that the State is Waiting),
 // then this method returns a Duration of 0.
@@ -144,8 +150,8 @@ const (
 	Retrying  // failed, but might be able to succeed after retry
 )
 
-func (ps State) String() string {
-	switch ps {
+func (state State) String() string {
+	switch state {
 	case Waiting:
 		return "Waiting"
 	case Running:
@@ -160,8 +166,8 @@ func (ps State) String() string {
 	return "<unknown pipe state>"
 }
 
-func (ps State) MarshalJSON() ([]byte, error) {
-	switch ps {
+func (state State) MarshalJSON() ([]byte, error) {
+	switch state {
 	case Waiting:
 		return []byte(`"Waiting"`), nil
 	case Running:
@@ -176,7 +182,7 @@ func (ps State) MarshalJSON() ([]byte, error) {
 	return nil, errors.New("unknown state")
 }
 
-func (ps Status) MarshalJSON() ([]byte, error) {
+func (s Status) MarshalJSON() ([]byte, error) {
 	type status struct {
 		State       State
 		StartedAt   int64
@@ -184,14 +190,14 @@ func (ps Status) MarshalJSON() ([]byte, error) {
 		Err         string
 	}
 	return json.Marshal(status{
-		State:       ps.State,
-		StartedAt:   ps.StartedAt.UnixNano() / 1e6,
-		CompletedAt: ps.CompletedAt.UnixNano() / 1e6,
-		Err:         fmt.Sprintf("%s", ps.Err),
+		State:       s.State,
+		StartedAt:   s.StartedAt.UnixNano() / 1e6,
+		CompletedAt: s.CompletedAt.UnixNano() / 1e6,
+		Err:         fmt.Sprintf("%s", s.Err),
 	})
 }
 
-// TaskGenerator generates Pipes from Task definitions.
+// A Client generates a Pipe from a Task definition.
 type Client interface {
 	GetPipe(task *Task) (Pipe, error)
 }

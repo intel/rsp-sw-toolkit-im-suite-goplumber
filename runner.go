@@ -47,13 +47,14 @@ func RunPipelineForever(ctx context.Context, p *Pipeline, d time.Duration) {
 func setResult(result *Status) {
 	panicErr := recover()
 
-	if panicErr == nil {
+	if panicErr != nil {
 		err, isErr := panicErr.(error)
 		if isErr {
 			err = errors.Wrap(err, "pipeline panicked")
 		} else {
 			err = errors.New("pipeline panicked")
 		}
+		result.Err = err
 	}
 
 	result.CompletedAt = time.Now().UTC()

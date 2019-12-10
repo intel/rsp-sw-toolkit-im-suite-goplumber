@@ -40,16 +40,16 @@ func (ms *MemoryStore) Put(ctx context.Context, key string, value []byte) error 
 	return nil
 }
 
-// FSLoader loads files from a base directory.
+// FileSystem loads files from a base directory.
 type FileSystem struct {
 	base string
 }
 
-// NewFSLoader returns a new FSLoader using the given base directory.
+// NewFileSystem returns a new FileSystem using the given base directory.
 //
 // The given base doesn't have to be absolute, but GetFile avoids "moving up"
 // past the base directory path.
-func NewFSLoader(base string) FileSystem {
+func NewFileSystem(base string) FileSystem {
 	return FileSystem{base: base}
 }
 

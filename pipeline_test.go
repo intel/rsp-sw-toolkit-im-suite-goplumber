@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-var dataLoader = NewFSLoader("testdata")
+var dataLoader = NewFileSystem("testdata")
 var memoryStore = NewMemoryStore()
 
 func init() {
@@ -77,6 +77,35 @@ func withDataServer(w *expect.TWrapper, dataMap map[string][]byte, f func(url st
 }
 
 func TestPipeline_simpleETL(t *testing.T) {
+	w := expect.WrapT(t).StopOnMismatch()
+	plumber := getTestPlumber()
+	p := getTestPipeline(w, plumber, "ETL.json")
+
+	w.ShouldHaveLength(p.pts, 5)
+
+	destRequests := withDataServer(w, map[string][]byte{
+		"/load":  []byte(`583671654321`),
+		"/store": []byte(``),
+	}, func(srcURL string) {
+		memoryStore.kvStore["loadURL"] = []byte(`"` + srcURL + `/load"`)
+		memoryStore.kvStore["storeURL"] = []byte(`"` + srcURL + `/store"`)
+		w.ShouldSucceed(p.Execute(context.Background()).Err)
+	})
+
+	w.ShouldContain(destRequests, []string{"/store"})
+	w.ShouldHaveLength(destRequests["/store"], 1)
+	w.ShouldBeEqual(destRequests["/store"][0], []byte(`1988-06-30T11:00:54.321Z`))
+}
+
+func TestPipeline_simpleETL_lowLogLevel(t *testing.T) {
+	// When the logging level is high, the executor avoids creating buffers
+	// for results that will just be thrown away, so verify everything works
+	// even when the level is increased.
+
+	lvl := logrus.GetLevel()
+	defer logrus.SetLevel(lvl)
+	logrus.SetLevel(logrus.ErrorLevel)
+
 	w := expect.WrapT(t).StopOnMismatch()
 	plumber := getTestPlumber()
 	p := getTestPipeline(w, plumber, "ETL.json")

@@ -231,7 +231,7 @@ func (pt *PipelineTask) Execute(ctx context.Context, w io.Writer, linkedValues l
 		return errors.Errorf("pipeline-based task is missing task '%s', "+
 			"which is the desired output", pt.OutputTask)
 	}
-	outputJob.dependants += 2
+	outputJob.dependants += 2 // mark ourselves dependent so the output isn't ignored
 
 	// try running the Pipeline
 	if err := execute(ctx, pctx); err != nil {
@@ -326,16 +326,6 @@ func execute(ctx context.Context, pctx *PipelineContext) error {
 		}
 
 		if err != nil {
-			pctx.baseEntry.
-				WithError(err).
-				Debugf("Task failed.")
-
-			if !isPermanentPipeError(err) {
-				// pctx.baseEntry.Debugf("Retrying.")
-				// note: because linking drops the dependants count, we can't relink (with this design)
-				// job.status.start()
-			}
-
 			job.status.State = Failed
 			job.status.CompletedAt = time.Now().UTC()
 			job.status.Err = err
@@ -344,11 +334,17 @@ func execute(ctx context.Context, pctx *PipelineContext) error {
 				return err
 			}
 
+			pctx.baseEntry.WithError(err).Warning("Task failed.")
+			// the Task's regular output probably isn't any good
 			shouldLogOutput = false
 		} else {
 			job.status.State = Success
 			job.status.CompletedAt = time.Now().UTC()
-			job.result = job.buffer.Bytes()
+			if job.buffer != nil {
+				job.result = job.buffer.Bytes()
+			} else {
+				job.result = emptyResult
+			}
 			pctx.baseEntry.Debugf("Task succeeded.")
 		}
 
@@ -377,8 +373,10 @@ func execute(ctx context.Context, pctx *PipelineContext) error {
 			if job.dependants == 0 {
 				// return the buffer since we don't need it
 				job.result = emptyResult
-				bufferPool.Put(job.buffer)
-				job.buffer = nil
+				if job.buffer != nil {
+					bufferPool.Put(job.buffer)
+					job.buffer = nil // make sure we don't hold a reference
+				}
 			}
 		}
 	}

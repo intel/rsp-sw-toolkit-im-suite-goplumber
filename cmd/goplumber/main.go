@@ -17,12 +17,11 @@ func main() {
 	conf := flag.String("config", "plumber.json", "configuration file")
 	flag.Parse()
 
-	log.SetLevel(log.DebugLevel)
-
 	data, err := ioutil.ReadFile(*conf)
 	if err != nil {
 		log.Fatal(err)
 	}
+
 	pc := PlumberConfig{}
 	if err := json.Unmarshal(data, &pc); err != nil {
 		log.Fatal(err)
@@ -51,7 +50,7 @@ func loadPipelines(ctx context.Context, config PlumberConfig) error {
 	log.Debug("Starting pipelines.")
 	plumber := goplumber.NewPlumber()
 
-	loader := goplumber.NewFSLoader(config.ConfigDir)
+	loader := goplumber.NewFileSystem(config.ConfigDir)
 	plumber.SetTemplateSource("template", loader)
 	plumber.SetSource("secret", loader)
 	plumber.SetSink("saveFile", loader)

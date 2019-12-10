@@ -1,3 +1,9 @@
+/* Apache v2 license
+*  Copyright (C) <2019> Intel Corporation
+*
+*  SPDX-License-Identifier: Apache-2.0
+ */
+
 package goplumber
 
 import (
@@ -41,8 +47,8 @@ type Task struct {
 	ErrorIfEmpty     bool            `json:"errorIfEmpty"`
 	DisableResultLog bool            `json:"disableResultLog"`
 	ContinueOnError  bool            `json:"continueOnError"`
-	name             string // used for logging
-	dependants       int    // number of task that depend on this one
+	name             string          // used for logging
+	dependants       int             // number of task that depend on this one
 }
 
 type taskMap = map[string]*Task
@@ -146,8 +152,8 @@ const (
 	Waiting = State(iota) // not running/failed
 	Running
 	Success
-	Failed    // failed in an unrecoverable way, or exceeded retries
-	Retrying  // failed, but might be able to succeed after retry
+	Failed   // failed in an unrecoverable way, or exceeded retries
+	Retrying // failed, but might be able to succeed after retry
 )
 
 func (state State) String() string {

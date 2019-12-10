@@ -1,3 +1,9 @@
+/* Apache v2 license
+*  Copyright (C) <2019> Intel Corporation
+*
+*  SPDX-License-Identifier: Apache-2.0
+ */
+
 package goplumber
 
 import (
@@ -84,4 +90,3 @@ func TestUnmarshalPartial(t *testing.T) {
 	w.ShouldBeEqual(starter.d, Struct{})
 	w.ShouldBeEqual(starter.F, Struct{})
 }
-

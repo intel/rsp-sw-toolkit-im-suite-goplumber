@@ -1,3 +1,9 @@
+/* Apache v2 license
+*  Copyright (C) <2019> Intel Corporation
+*
+*  SPDX-License-Identifier: Apache-2.0
+ */
+
 package main
 
 import (
@@ -12,8 +18,8 @@ import (
 
 func main() {
 	tmplDir := flag.String("tdir", ".", "directory containing templates")
-	namespaces := flag.String("namespaces", "","comma separated list of namespaces to load from template dir")
-	tmplName := flag.String("tname", "","name of the template to execute")
+	namespaces := flag.String("namespaces", "", "comma separated list of namespaces to load from template dir")
+	tmplName := flag.String("tname", "", "name of the template to execute")
 	inputFile := flag.String("input", "", "filename containing JSON input for template")
 	flag.Parse()
 

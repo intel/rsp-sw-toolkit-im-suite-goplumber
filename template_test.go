@@ -10,7 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.impcloud.net/RSP-Inventory-Suite/expect"
+	"github.com/intel/rsp-sw-toolkit-im-suite-expect"
 	"testing"
 )
 

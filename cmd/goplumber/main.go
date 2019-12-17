@@ -12,7 +12,7 @@ import (
 	"flag"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-	"github.impcloud.net/RSP-Inventory-Suite/goplumber"
+	"github.com/intel/rsp-sw-toolkit-im-suite-goplumber"
 	"io/ioutil"
 	"os"
 	"os/signal"

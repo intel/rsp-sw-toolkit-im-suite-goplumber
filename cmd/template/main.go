@@ -11,7 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"github.impcloud.net/RSP-Inventory-Suite/goplumber"
+	"github.com/intel/rsp-sw-toolkit-im-suite-goplumber"
 	"log"
 	"strings"
 )

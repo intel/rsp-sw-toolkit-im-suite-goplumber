@@ -7,8 +7,8 @@
 package goplumber
 
 import (
+	"github.com/intel/rsp-sw-toolkit-im-suite-expect"
 	"github.com/sirupsen/logrus"
-	"github.impcloud.net/RSP-Inventory-Suite/expect"
 	"testing"
 )
 

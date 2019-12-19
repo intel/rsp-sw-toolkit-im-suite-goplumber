@@ -9,8 +9,8 @@ package goplumber
 import (
 	"context"
 	"encoding/json"
+	"github.com/intel/rsp-sw-toolkit-im-suite-expect"
 	"github.com/sirupsen/logrus"
-	"github.impcloud.net/RSP-Inventory-Suite/expect"
 	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
